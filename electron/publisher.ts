@@ -1,0 +1,340 @@
+import { BrowserWindow, Menu, session, dialog } from "electron";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  platforms,
+  allowedPlatformUrl,
+  type Account,
+  type Job,
+} from "../src/domain";
+import { Store } from "./store";
+import { makePreview } from "./content";
+import type { FillRequest, FillResult } from "./inject";
+export class Publisher {
+  windows = new Map<string, BrowserWindow>();
+  busy = false;
+  timer: ReturnType<typeof setInterval> | undefined;
+  constructor(
+    private store: Store,
+    private bundlePath: string,
+  ) {}
+  start() {
+    this.timer = setInterval(() => void this.tick(), 1500);
+  }
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+  }
+  account(id: string) {
+    const a = this.store.state.accounts.find((a) => a.id === id);
+    if (!a) throw Error("账号不存在");
+    return a;
+  }
+  async open(id: string): Promise<BrowserWindow> {
+    const a = this.account(id);
+    let win = this.windows.get(id);
+    if (win && !win.isDestroyed()) {
+      win.show();
+      win.focus();
+      return win;
+    }
+    const partition = `persist:account-${a.id}`;
+    const ses = session.fromPartition(partition);
+    ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
+    ses.setPermissionCheckHandler(() => false);
+    win = new BrowserWindow({
+      width: 1200,
+      height: 860,
+      title: `${a.name} · ${platforms[a.platform].name}`,
+      webPreferences: {
+        partition,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+      },
+    });
+    win.on("page-title-updated", (event) => {
+      event.preventDefault();
+      win!.setTitle(`${a.name} · ${platforms[a.platform].name}`);
+    });
+    const navigate = (url: string) => {
+      void win!.loadURL(url).catch(() => {
+        if (!win!.isDestroyed())
+          void dialog.showMessageBox(win!, {
+            type: "error",
+            message: "平台页面加载失败",
+            detail: "请检查网络连接，再从平台窗口菜单重新加载。",
+          });
+      });
+    };
+    const safe = (_event: Electron.Event, url: string) => {
+      if (!allowedPlatformUrl(a.platform, url)) _event.preventDefault();
+    };
+    win.webContents.on("will-navigate", safe);
+    win.webContents.on("will-redirect", safe);
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (allowedPlatformUrl(a.platform, url)) navigate(url);
+      return { action: "deny" };
+    });
+    win.webContents.on("will-attach-webview", (e) => e.preventDefault());
+    const platformMenu = Menu.buildFromTemplate([
+      { label: "分发工作台", submenu: [{ role: "about" }, { role: "quit" }] },
+      {
+        label: "平台窗口",
+        submenu: [
+          {
+            label: "返回",
+            click: () => {
+              if (win!.webContents.navigationHistory.canGoBack())
+                win!.webContents.navigationHistory.goBack();
+            },
+          },
+          { label: "重新加载", click: () => win!.reload() },
+          {
+            label: "打开创作入口",
+            click: () => navigate(platforms[a.platform].url),
+          },
+          { type: "separator" },
+          { role: "close" },
+        ],
+      },
+      {
+        label: "编辑",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+    ]);
+    win.setMenu(platformMenu);
+    if (process.platform === "darwin")
+      win.on("focus", () => Menu.setApplicationMenu(platformMenu));
+    this.windows.set(id, win);
+    win.on("closed", () => this.windows.delete(id));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        win.loadURL(platforms[a.platform].url),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            if (!win!.isDestroyed()) win!.webContents.stop();
+            reject(Error("平台页面加载超时，请检查网络后重新加载。"));
+          }, 30000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+    return win;
+  }
+  async evaluate(
+    win: BrowserWindow,
+    account: Account,
+    request: FillRequest,
+  ): Promise<FillResult[]> {
+    if (!allowedPlatformUrl(account.platform, win.webContents.getURL()))
+      throw Error("当前不是该平台的安全页面。");
+    const bundle = fs.readFileSync(this.bundlePath, "utf8");
+    const result: FillResult[] = [];
+    // Cross-origin editors (for example CSDN's editor iframe) are handled per permitted frame.
+    for (const frame of win.webContents.mainFrame.framesInSubtree) {
+      if (
+        frame.url !== "about:blank" &&
+        !allowedPlatformUrl(account.platform, frame.url)
+      )
+        continue;
+      try {
+        const r = await frame.executeJavaScript(
+          `${bundle}\nStudioAdapter.run(${JSON.stringify(request)})`,
+          true,
+        );
+        result.push(r as FillResult);
+      } catch (e) {
+        if (frame === win.webContents.mainFrame) throw e;
+      }
+    }
+    return result;
+  }
+  async check(id: string) {
+    const a = this.account(id),
+      win = await this.open(id);
+    const results = await this.evaluate(win, a, {
+      mode: "probe",
+      platform: a.platform,
+      title: "",
+      html: "",
+      text: "",
+      markdown: "",
+      images: [],
+    });
+    const ready =
+      results.some((r) => r.titleFound) && results.some((r) => r.bodyFound);
+    this.store.change((s) => {
+      const target = s.accounts.find((x) => x.id === id)!;
+      target.status = ready ? "editor_ready" : "unknown";
+      target.checkedAt = new Date().toISOString();
+    });
+    return ready;
+  }
+  async tick() {
+    if (this.busy || this.store.state.settings.queuePaused) return;
+    const j = [...this.store.state.jobs]
+      .reverse()
+      .find(
+        (j) =>
+          j.status === "queued" &&
+          (!j.scheduledAt || Date.parse(j.scheduledAt) <= Date.now()),
+      );
+    if (!j) return;
+    this.busy = true;
+    try {
+      await this.execute(j);
+    } catch (error) {
+      if (this.store.job(j.id).status === "running")
+        this.store.updateJob(
+          j.id,
+          { status: "failed" },
+          String(error instanceof Error ? error.message : error),
+        );
+    } finally {
+      this.busy = false;
+    }
+  }
+  async execute(job: Job) {
+    this.store.updateJob(
+      job.id,
+      { status: "running", attempts: job.attempts + 1 },
+      "正在打开账号编辑器。",
+    );
+    const account = this.account(job.accountId);
+    const win = await this.open(job.accountId);
+    const article = this.store.article(job.articleId);
+    const snapshot = {
+      ...article,
+      title: job.snapshot.title,
+      markdown: job.snapshot.markdown,
+      overrides: { [job.platform]: job.snapshot },
+    };
+    const preview = await makePreview(
+      snapshot,
+      job.platform,
+      this.store.state.assets,
+      (a) => this.store.assetData(a),
+    );
+    if (
+      preview.warnings.some(
+        (w) => w.includes("本地图片缺失") || w.includes("图片地址未解析"),
+      )
+    ) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        "稿件包含缺失或未导入的图片。请取消任务、修复素材后重新创建。",
+      );
+      return;
+    }
+    if (
+      job.platform === "xiaohongshu" &&
+      (preview.text.length > 1000 ||
+        [...preview.title].length > 20 ||
+        !preview.images.length)
+    ) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        "小红书稿需要 20 字内标题、1000 字内正文和至少一张配图。请取消任务、修改平台稿后重新创建。",
+      );
+      return;
+    }
+    let probe: FillResult[] = [];
+    const until = Date.now() + 12000;
+    do {
+      if (win.isDestroyed()) throw Error("平台窗口已关闭。");
+      probe = await this.evaluate(win, account, {
+        ...preview,
+        mode: "probe",
+        platform: job.platform,
+      });
+      if (probe.some((r) => r.titleFound) && probe.some((r) => r.bodyFound))
+        break;
+      await new Promise((r) => setTimeout(r, 500));
+    } while (Date.now() < until);
+    if (!probe.some((r) => r.titleFound) || !probe.some((r) => r.bodyFound)) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        "未识别到完整编辑器。请在平台窗口登录并打开空白文章，再点击继续填充。",
+      );
+      return;
+    }
+    const inspection = await this.evaluate(win, account, {
+      ...preview,
+      mode: "inspect",
+      platform: job.platform,
+    });
+    const existing = inspection.find((r) => r.conflict);
+    if (existing) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        existing.message,
+      );
+      return;
+    }
+    const results = await this.evaluate(win, account, {
+      ...preview,
+      mode: "fill",
+      platform: job.platform,
+      taskId: job.id,
+    });
+    const conflict = results.find((r) => r.conflict);
+    if (conflict) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        conflict.message,
+      );
+      return;
+    }
+    const title = results.some((r) => r.titleFilled),
+      body = results.some((r) => r.bodyFilled);
+    if (!title || !body) {
+      this.store.updateJob(
+        job.id,
+        { status: "needs_attention" },
+        `填充回读未通过（标题${title ? "已写入" : "未确认"}，正文${body ? "已写入" : "未确认"}）。请检查编辑器；可复制平台稿手动完成。`,
+      );
+      return;
+    }
+    this.store.change((s) => {
+      const a = s.accounts.find((a) => a.id === account.id)!;
+      a.status = "editor_ready";
+      a.checkedAt = new Date().toISOString();
+    });
+    this.store.updateJob(
+      job.id,
+      { status: "awaiting_review" },
+      `标题和正文已填入。${platforms[job.platform].hint}确认平台已发布后，再在任务中登记文章链接。`,
+    );
+  }
+  async removeAccount(id: string) {
+    if (
+      this.store.state.jobs.some(
+        (j) =>
+          j.accountId === id && !["published", "cancelled"].includes(j.status),
+      )
+    )
+      throw Error("请先处理或取消该账号的未完成任务。");
+    this.windows.get(id)?.destroy();
+    const ses = session.fromPartition(`persist:account-${id}`);
+    await ses.clearStorageData();
+    await ses.clearCache();
+    this.store.change((s) => {
+      s.accounts = s.accounts.filter((a) => a.id !== id);
+    });
+  }
+}

@@ -1,0 +1,46 @@
+# 结构与行为约定
+
+## 数据流
+
+主稿 + 平台独立稿 → Markdown 渲染 / HTML 清洗 / 平台排版 → 预览或导出 → 固定任务快照 → 独立账号会话 → 编辑器冲突预检 → 填充并回读 → 人工检查发布 → 登记平台链接。
+
+自建 Web 输出 HTML、Markdown 和素材包。发布执行器不绑定上游内容项目，可通过导入任意 Markdown 使用。
+
+## 进程边界
+
+- 工作台 React 页面通过 sandbox preload 暴露的有限方法调用主进程。
+- 主进程只接受工作台主 frame 的 IPC；平台窗口没有 preload、没有 Node、没有工作台桥接。
+- 平台窗口启用 sandbox、contextIsolation、webSecurity；导航限制到该平台域名，不允许任意弹窗或浏览器权限。
+- 填充器在受限平台 frame 中执行。CSDN 等跨域编辑器使用 Electron frame API 逐个访问允许的 frame，不关闭跨域安全机制。
+- 稿件 HTML 先按白名单清洗。工作台预览 iframe 使用 sandbox 和独立 CSP，不执行稿件脚本。
+
+## 内容和任务
+
+文章 `revision` 乐观并发校验；保存后产生新版本，最多保留 30 次主稿正文/标题历史。独立平台稿保存在 `overrides` 中，历史恢复仅恢复主稿标题和正文。
+
+任务包含平台稿快照和账号 ID。去重指纹由文章 ID、账号 ID、平台稿内容构成。相同账号、相同内容已经存在时拒绝创建；已取消的任务允许重新创建。
+
+状态路径：
+
+- queued → running → awaiting_review → published。
+- running → needs_attention / failed。
+- needs_attention / failed / awaiting_review → 用户继续 → queued。
+- 未运行且未发布的任务 → cancelled。
+
+`published` 是用户登记状态，必须提供该平台的 HTTPS 链接，不代表客户端独立检查了平台公开页。
+
+运行中任务意外退出后转为 needs_attention，不自动重放。普通排队任务恢复后仍可执行。队列串行执行，避免同时在多个账号页面争抢焦点；待检查任务不阻塞下一账号。
+
+## 存储与备份
+
+主数据：Electron userData 下 `workspace.json`。每次事务克隆校验，写临时文件、fsync、保留旧文件 `.bak` 后原子替换。读取错误不会自动清空用户数据。
+
+素材：`assets/<sha256>`。文件以内容去重，仅接受 PNG/JPEG/WebP/GIF 签名字节，单张上限 12 MB。
+
+完整备份：状态与图片 base64，不包含浏览器 Cookie。恢复时先校验 schema、长度和 SHA-256，再替换状态；任务暂停并要求检查。恢复操作前有明确替换确认。
+
+## 平台维护
+
+平台入口在 `src/domain.ts`；编辑器定位和行为在 `electron/inject.ts`。新增或修复平台时，应准备能复现真实 DOM / 编辑器行为的夹具，并用实际账号验证图片、封面、正文与保存行为。
+
+不要把“选择器命中”“正文回读正确”“草稿已保存”“文章已发布”“审核通过”合并成一个成功状态。当前自动化验收到正文回读，后续步骤在平台完成。

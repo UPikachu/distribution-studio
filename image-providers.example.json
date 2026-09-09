@@ -1,0 +1,24 @@
+{
+  "format": "distribution-studio-image-config",
+  "config": {
+    "version": 1,
+    "defaultProvider": "aliyun",
+    "providers": {
+      "ark": {
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+        "model": "doubao-seedream-4-0-250828",
+        "apiKey": ""
+      },
+      "aliyun": {
+        "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
+        "model": "qwen-image-3.0",
+        "apiKey": ""
+      },
+      "minimax": {
+        "baseUrl": "https://api.minimax.cn/v1",
+        "model": "image-01",
+        "apiKey": ""
+      }
+    }
+  }
+}

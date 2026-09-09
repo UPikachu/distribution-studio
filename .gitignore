@@ -1,0 +1,26 @@
+node_modules/
+dist/
+dist-electron/
+release/
+test-results/
+playwright-report/
+.e2e-data/
+.DS_Store
+
+# User configuration and secrets (templates use *.example.json)
+*.user.json
+*.user.json.*
+*.local.json
+.env
+.env.*
+!.env.example
+user-config/
+image-history/
+
+# Local workspace data and recoverable deleted images
+workspace.json
+workspace.json.*
+deleted-assets/
+.studio-data/
+# Screenshot containing this machine’s service configuration
+docs/screenshots/image-settings.png
