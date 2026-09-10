@@ -50,7 +50,8 @@ export class Store {
     const file = path.join(this.directory, "workspace.json"),
       tmp = file + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(validated, null, 2), { mode: 0o600 });
-    const fd = fs.openSync(tmp, "r");
+    // Windows requires a writable handle when flushing file buffers.
+    const fd = fs.openSync(tmp, "r+");
     try {
       fs.fsyncSync(fd);
     } finally {

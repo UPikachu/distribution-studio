@@ -35,7 +35,7 @@ test("编辑、平台稿、图片、重启与导出备份", async () => {
       "## 为什么保留主稿？\n\n核心事实保持一致，表达可以不同。\n\n```js\nconst draft = true;\n```",
     );
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText("已保存 · v1")).toBeVisible();
+  await expect(page.locator(".save-status")).toHaveText("已保存 · v1");
   await page.getByRole("button", { name: "平台稿", exact: true }).click();
   await page.getByLabel("文章标题").fill("公众号的专用标题");
   await page.getByRole("button", { name: "保存", exact: true }).click();

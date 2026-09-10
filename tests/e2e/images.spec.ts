@@ -14,7 +14,7 @@ test("生图设置加密、导出导入与生成图片插入文章", async () =>
     await page.getByRole("button", { name: "新建文章", exact: true }).click();
     await page.getByLabel("文章标题").fill("生成图片验收");
     await page.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(page.getByText(/已保存 · v/)).toBeVisible();
+    await expect(page.locator(".save-status")).toHaveText(/已保存 · v/);
     await page.getByRole("button", { name: "设置与备份", exact: true }).click();
     await page.getByLabel("MiniMax API Key").fill("mock-private-key");
     await page.getByLabel("默认生图服务").selectOption("minimax");
@@ -92,7 +92,7 @@ test("生图设置加密、导出导入与生成图片插入文章", async () =>
       .click();
     await expect(page.getByLabel("文章正文")).toHaveValue(/asset:\/\//);
     await page.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(page.getByText(/已保存 · v/)).toBeVisible();
+    await expect(page.locator(".save-status")).toHaveText(/已保存 · v/);
     const workspace = JSON.stringify(
       (await page.evaluate(() => window.studio.bootstrap())).state,
     );
