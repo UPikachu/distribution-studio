@@ -98,7 +98,7 @@ export const platforms: Record<
     name: "网易号",
     short: "网",
     color: "#cc4145",
-    url: "https://mp.163.com/wemedia/content/article/edit.do",
+    url: "https://mp.163.com/subscribe_v4/index.html#/article-publish",
     hosts: ["163.com"],
     hint: "检查封面和分类。",
     group: "补充分发",

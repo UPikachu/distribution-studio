@@ -39,6 +39,13 @@ export class Publisher {
     }
     const partition = `persist:account-${a.id}`;
     const ses = session.fromPartition(partition);
+    const registrationUrl = "http://baijiahao.baidu.com/pcui/register/index";
+    if (a.platform === "baijiahao")
+      ses.webRequest.onBeforeRequest(
+        { urls: [registrationUrl] },
+        (_details, cb) =>
+          cb({ redirectURL: registrationUrl.replace("http:", "https:") }),
+      );
     ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
     ses.setPermissionCheckHandler(() => false);
     win = new BrowserWindow({
@@ -68,6 +75,7 @@ export class Publisher {
       });
     };
     const safe = (_event: Electron.Event, url: string) => {
+      if (a.platform === "baijiahao" && url === registrationUrl) return;
       if (!allowedPlatformUrl(a.platform, url)) _event.preventDefault();
     };
     win.webContents.on("will-navigate", safe);
