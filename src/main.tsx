@@ -240,11 +240,7 @@ function App() {
   async function openPublish() {
     const saved = dirty ? await save() : draft;
     if (!saved) return;
-    setSelectedAccounts(
-      state.accounts
-        .filter((a) => ["wechat", "zhihu", "csdn"].includes(a.platform))
-        .map((a) => a.id),
-    );
+    setSelectedAccounts([]);
     setSchedule("");
     setModal("publish");
   }
@@ -1262,6 +1258,30 @@ function App() {
                 <div className="eyebrow">NEW DISTRIBUTION</div>
                 <h2>创建分发任务</h2>
                 <p>{draft?.title} · 各平台稿会固定为本次快照。</p>
+                <div className="account-picker-toolbar">
+                  <span>
+                    已选 {selectedAccounts.length} / {state.accounts.length}{" "}
+                    个账号
+                  </span>
+                  <button
+                    className="text-button"
+                    disabled={!state.accounts.length}
+                    onClick={() =>
+                      setSelectedAccounts(
+                        state.accounts.every((a) =>
+                          selectedAccounts.includes(a.id),
+                        )
+                          ? []
+                          : state.accounts.map((a) => a.id),
+                      )
+                    }
+                  >
+                    {state.accounts.length > 0 &&
+                    state.accounts.every((a) => selectedAccounts.includes(a.id))
+                      ? "清空选择"
+                      : "全选"}
+                  </button>
+                </div>
                 <div className="account-picker">
                   {state.accounts.map((a) => (
                     <label key={a.id}>
