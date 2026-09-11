@@ -24,6 +24,7 @@ const shapes = {
     scheduledAt: z.string().datetime().nullable(),
   },
   "queue.pause": { paused: z.boolean() },
+  "queue.cancelAll": {},
   "job.retry": id,
   "job.cancel": id,
   "job.open": id,

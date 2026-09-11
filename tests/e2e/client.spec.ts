@@ -147,6 +147,9 @@ test("真实 Electron 窗口：队列填充、重复拦截与人工登记", asyn
     .fill("## 完整正文\n\n测试强调 **内容** 与列表。\n\n- 第一步\n- 第二步");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByRole("button", { name: "分发", exact: true }).click();
+  await expect(page.getByRole("button", { name: "创建 0 个任务" })).toBeDisabled();
+  await expect(page.locator(".account-picker input:checked")).toHaveCount(0);
+  await page.getByRole("button", { name: "全选", exact: true }).click();
   await page.getByRole("button", { name: "创建 1 个任务" }).click();
   await expect(page.getByText("待检查发布", { exact: true })).toBeVisible({
     timeout: 30000,
@@ -222,6 +225,9 @@ test("已有草稿不覆盖", async () => {
   await page.getByLabel("文章正文").fill("新的正文");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByRole("button", { name: "分发", exact: true }).click();
+  await expect(page.getByRole("button", { name: "创建 0 个任务" })).toBeDisabled();
+  await expect(page.locator(".account-picker input:checked")).toHaveCount(0);
+  await page.getByRole("button", { name: "全选", exact: true }).click();
   await page.getByRole("button", { name: "创建 1 个任务" }).click();
   await expect(
     page.getByText("标题栏已有其他内容，未覆盖。", { exact: true }),

@@ -98,7 +98,7 @@ export const platforms: Record<
     name: "网易号",
     short: "网",
     color: "#cc4145",
-    url: "https://mp.163.com/wemedia/content/article/edit.do",
+    url: "https://mp.163.com/subscribe_v4/index.html#/article-publish",
     hosts: ["163.com"],
     hint: "检查封面和分类。",
     group: "补充分发",
@@ -173,6 +173,7 @@ export type Asset = z.infer<typeof assetSchema>;
 export const jobStatuses = [
   "queued",
   "running",
+  "cancelling",
   "needs_attention",
   "awaiting_review",
   "published",
@@ -194,6 +195,7 @@ export const jobSchema = z.object({
   fingerprint: z.string(),
   attempts: z.number().int(),
   message: z.string(),
+  phase: z.enum(["opening", "waiting", "inspecting", "filling"]).optional(),
   resultUrl: z.string(),
   logs: z.array(z.object({ at: z.string(), message: z.string() })).max(200),
 });
@@ -230,6 +232,7 @@ export type Command =
       scheduledAt: string | null;
     }
   | { type: "queue.pause"; paused: boolean }
+  | { type: "queue.cancelAll" }
   | { type: "job.retry"; id: string }
   | { type: "job.cancel"; id: string }
   | { type: "job.open"; id: string }
@@ -261,7 +264,8 @@ declare global {
 }
 export const statusLabels: Record<JobStatus, string> = {
   queued: "排队中",
-  running: "正在填充",
+  running: "正在执行",
+  cancelling: "正在取消",
   needs_attention: "需要处理",
   awaiting_review: "待检查发布",
   published: "已人工确认发布",

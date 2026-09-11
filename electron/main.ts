@@ -293,27 +293,20 @@ async function command(input: unknown) {
     case "queue.add":
       store.enqueue(c.articleId, c.accountIds, c.scheduledAt);
       break;
+    case "queue.cancelAll":
+      await publisher.cancelAll();
+      break;
     case "queue.pause":
       store.change((s) => {
         s.settings.queuePaused = c.paused;
       });
       break;
     case "job.retry": {
-      const j = store.job(c.id);
-      if (!["failed", "needs_attention", "awaiting_review"].includes(j.status))
-        throw Error("此任务当前不能继续执行。");
-      store.updateJob(
-        c.id,
-        { status: "queued", scheduledAt: null },
-        "用户请求继续填充；已有不同内容不会被覆盖。",
-      );
+      store.retry(c.id);
       break;
     }
     case "job.cancel": {
-      const j = store.job(c.id);
-      if (["running", "published", "cancelled"].includes(j.status))
-        throw Error("正在执行或已结束的任务不能取消。");
-      store.updateJob(c.id, { status: "cancelled" }, "用户取消任务。");
+      await publisher.cancel(c.id);
       break;
     }
     case "job.open": {

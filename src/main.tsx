@@ -150,7 +150,7 @@ function App() {
     setBusy(true);
     try {
       const next = await window.studio.command(c);
-      setState(next);
+      // Store pushes are authoritative; a slow command response can be older.
       return next;
     } catch (e) {
       notify(String(e).replace(/^Error:.*?Error: /, ""), true);
@@ -240,11 +240,7 @@ function App() {
   async function openPublish() {
     const saved = dirty ? await save() : draft;
     if (!saved) return;
-    setSelectedAccounts(
-      state.accounts
-        .filter((a) => ["wechat", "zhihu", "csdn"].includes(a.platform))
-        .map((a) => a.id),
-    );
+    setSelectedAccounts([]);
     setSchedule("");
     setModal("publish");
   }
@@ -753,29 +749,51 @@ function App() {
                     填充、检查、发布，每一步都有记录。预约任务仅在客户端运行时执行。
                   </p>
                 </div>
-                <button
-                  onClick={() =>
-                    act({
-                      type: "queue.pause",
-                      paused: !state.settings.queuePaused,
-                    })
-                  }
-                >
-                  {state.settings.queuePaused ? (
-                    <Play size={16} />
-                  ) : (
-                    <Pause size={16} />
-                  )}{" "}
-                  {state.settings.queuePaused ? "恢复队列" : "暂停队列"}
-                </button>
+                <div className="job-actions">
+                  <button
+                    disabled={
+                      !state.jobs.some(
+                        (j) => !["published", "cancelled"].includes(j.status),
+                      )
+                    }
+                    onClick={() => act({ type: "queue.cancelAll" })}
+                    title="取消所有未结束任务（含预约），保留平台已有内容"
+                  >
+                    全部取消（
+                    {
+                      state.jobs.filter(
+                        (j) => !["published", "cancelled"].includes(j.status),
+                      ).length
+                    }
+                    ）
+                  </button>
+                  <button
+                    onClick={() =>
+                      act({
+                        type: "queue.pause",
+                        paused: !state.settings.queuePaused,
+                      })
+                    }
+                  >
+                    {state.settings.queuePaused ? (
+                      <Play size={16} />
+                    ) : (
+                      <Pause size={16} />
+                    )}{" "}
+                    {state.settings.queuePaused ? "恢复队列" : "暂停队列"}
+                  </button>
+                </div>
               </div>
+              <p>
+                暂停只停止后续调度；取消会停止工作台任务，平台已有草稿和文章保留。
+              </p>
             </section>
             <div className="stats-grid">
               {[
                 [
                   "排队与执行",
                   state.jobs.filter((j) =>
-                    ["queued", "running"].includes(j.status),
+                    ["queued", "running", "cancelling"].includes(j.status),
                   ).length,
                 ],
                 [
@@ -821,7 +839,14 @@ function App() {
                         </small>
                       </div>
                       <span className={"status status-" + j.status}>
-                        {statusLabels[j.status]}
+                        {j.status === "running" && j.phase
+                          ? {
+                              opening: "打开平台",
+                              waiting: "等待编辑器",
+                              inspecting: "检查草稿",
+                              filling: "填充并核对",
+                            }[j.phase]
+                          : statusLabels[j.status]}
                       </span>
                     </div>
                     <p className="job-message">{j.message}</p>
@@ -847,6 +872,7 @@ function App() {
                         "needs_attention",
                         "failed",
                         "awaiting_review",
+                        "cancelled",
                       ].includes(j.status) && (
                         <button
                           className="small"
@@ -854,7 +880,7 @@ function App() {
                           onClick={() => act({ type: "job.retry", id: j.id })}
                         >
                           <RefreshCw size={14} />
-                          继续填充
+                          {j.status === "cancelled" ? "重新执行" : "继续填充"}
                         </button>
                       )}
                       {["awaiting_review", "needs_attention"].includes(
@@ -872,7 +898,7 @@ function App() {
                           登记已发布
                         </button>
                       )}
-                      {!["running", "published", "cancelled"].includes(
+                      {!["cancelling", "published", "cancelled"].includes(
                         j.status,
                       ) && (
                         <button
@@ -1262,6 +1288,30 @@ function App() {
                 <div className="eyebrow">NEW DISTRIBUTION</div>
                 <h2>创建分发任务</h2>
                 <p>{draft?.title} · 各平台稿会固定为本次快照。</p>
+                <div className="account-picker-toolbar">
+                  <span>
+                    已选 {selectedAccounts.length} / {state.accounts.length}{" "}
+                    个账号
+                  </span>
+                  <button
+                    className="text-button"
+                    disabled={!state.accounts.length}
+                    onClick={() =>
+                      setSelectedAccounts(
+                        state.accounts.every((a) =>
+                          selectedAccounts.includes(a.id),
+                        )
+                          ? []
+                          : state.accounts.map((a) => a.id),
+                      )
+                    }
+                  >
+                    {state.accounts.length > 0 &&
+                    state.accounts.every((a) => selectedAccounts.includes(a.id))
+                      ? "清空选择"
+                      : "全选"}
+                  </button>
+                </div>
                 <div className="account-picker">
                   {state.accounts.map((a) => (
                     <label key={a.id}>

@@ -1089,6 +1089,13 @@ p {
   margin-top: 18px;
   border-radius: 6px;
 }
+.account-picker-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
 .account-picker {
   max-height: 290px;
   overflow: auto;
