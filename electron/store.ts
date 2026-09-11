@@ -174,6 +174,47 @@ export class Store {
       j.logs = [...j.logs, { at: j.updatedAt, message }].slice(-200);
     });
   }
+  retry(id: string) {
+    const job = this.job(id);
+    if (
+      !["cancelled", "failed", "needs_attention", "awaiting_review"].includes(
+        job.status,
+      )
+    )
+      throw Error("此任务当前不能重新执行。");
+    if (!this.state.articles.some((a) => a.id === job.articleId))
+      throw Error("原文章已删除，无法重新执行此任务。");
+    if (
+      !this.state.accounts.some(
+        (a) => a.id === job.accountId && a.platform === job.platform,
+      )
+    )
+      throw Error("原账号已删除或平台不匹配，请重新选择账号创建任务。");
+    if (
+      this.state.jobs.some(
+        (j) =>
+          j.id !== id &&
+          j.fingerprint === job.fingerprint &&
+          j.status !== "cancelled",
+      )
+    )
+      throw Error("该账号已有相同内容的任务，请处理已有任务，避免重复分发。");
+    for (const [, assetId] of job.snapshot.markdown.matchAll(
+      /asset:\/\/([a-f0-9]{64})/g,
+    )) {
+      if (
+        !this.state.assets.some((a) => a.id === assetId) ||
+        !fs.existsSync(path.join(this.directory, "assets", assetId))
+      )
+        throw Error("原任务引用的本地素材已缺失，请重新导入后再执行。");
+    }
+    const action = job.status === "cancelled" ? "重新执行" : "继续填充";
+    this.updateJob(
+      id,
+      { status: "queued", phase: undefined, scheduledAt: null },
+      `已重新排队，使用原任务稿件${action}；已有不同内容不会被覆盖。${this.state.settings.queuePaused ? "队列已暂停，请恢复队列后执行。" : ""}`,
+    );
+  }
   confirm(id: string, url: string) {
     const j = this.job(id);
     if (!["awaiting_review", "needs_attention"].includes(j.status))

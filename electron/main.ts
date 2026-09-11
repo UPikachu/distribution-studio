@@ -302,14 +302,7 @@ async function command(input: unknown) {
       });
       break;
     case "job.retry": {
-      const j = store.job(c.id);
-      if (!["failed", "needs_attention", "awaiting_review"].includes(j.status))
-        throw Error("此任务当前不能继续执行。");
-      store.updateJob(
-        c.id,
-        { status: "queued", scheduledAt: null },
-        "用户请求继续填充；已有不同内容不会被覆盖。",
-      );
+      store.retry(c.id);
       break;
     }
     case "job.cancel": {

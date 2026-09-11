@@ -872,6 +872,7 @@ function App() {
                         "needs_attention",
                         "failed",
                         "awaiting_review",
+                        "cancelled",
                       ].includes(j.status) && (
                         <button
                           className="small"
@@ -879,7 +880,7 @@ function App() {
                           onClick={() => act({ type: "job.retry", id: j.id })}
                         >
                           <RefreshCw size={14} />
-                          继续填充
+                          {j.status === "cancelled" ? "重新执行" : "继续填充"}
                         </button>
                       )}
                       {["awaiting_review", "needs_attention"].includes(

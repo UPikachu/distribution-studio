@@ -25,6 +25,7 @@
 - queued → running → awaiting_review → published。
 - running → needs_attention / failed。
 - needs_attention / failed / awaiting_review → 用户继续 → queued。
+- cancelled → 单条任务“重新执行” → queued。沿用原稿件快照和执行记录，清除原预约时间；原文章、账号和本地素材必须存在，且不能有其他未取消的同指纹任务。队列暂停状态不变，顶部“恢复队列”不会恢复已取消任务。
 - running → cancelling → cancelled；其他未结束任务可直接取消。
 - cancelling 意外退出后恢复为 cancelled；running 意外退出仍恢复为 needs_attention。
 
