@@ -31,13 +31,19 @@ export class Store {
     this.state = fs.existsSync(file)
       ? stateSchema.parse(JSON.parse(fs.readFileSync(file, "utf8")))
       : emptyState();
-    if (this.state.jobs.some((j) => j.status === "running"))
+    if (
+      this.state.jobs.some((j) => ["running", "cancelling"].includes(j.status))
+    )
       this.change((s) => {
         for (const j of s.jobs)
-          if (j.status === "running") {
-            j.status = "needs_attention";
-            j.message =
-              "上次运行意外中断，请检查平台草稿后继续；未自动重复执行。";
+          if (["running", "cancelling"].includes(j.status)) {
+            const cancelling = j.status === "cancelling";
+            j.status = cancelling ? "cancelled" : "needs_attention";
+            j.phase = undefined;
+            j.updatedAt = new Date().toISOString();
+            j.message = cancelling
+              ? "已恢复上次取消操作；平台已有内容保留。"
+              : "上次运行意外中断，请检查平台草稿后继续；未自动重复执行。";
             j.logs.push({ at: new Date().toISOString(), message: j.message });
             j.logs = j.logs.slice(-200);
           }

@@ -1,6 +1,8 @@
 import type { PlatformId } from "../src/domain";
 export type FillRequest = {
   taskId?: string;
+  runId?: string;
+  deadline?: number;
   mode: "probe" | "inspect" | "fill";
   platform: PlatformId;
   title: string;
@@ -130,7 +132,13 @@ function setControl(e: HTMLElement, value: string) {
   setter?.call(e, value);
   events(e);
 }
-async function writeRich(e: HTMLElement, html: string, text: string) {
+async function writeRich(
+  e: HTMLElement,
+  html: string,
+  text: string,
+  check: () => void,
+) {
+  check();
   select(e);
   const transfer = new DataTransfer();
   transfer.setData("text/html", html);
@@ -143,12 +151,14 @@ async function writeRich(e: HTMLElement, html: string, text: string) {
     }),
   );
   await delay(150);
+  check();
   if (normalize(read(e)) === normalize(text)) return;
   // A partially accepted paste must not be appended a second time.
   select(e);
   document.execCommand("insertHTML", false, html);
   events(e);
   await delay(350);
+  check();
 }
 function modelEditor(): {
   get: () => string;
@@ -182,6 +192,15 @@ function modelEditor(): {
   return null;
 }
 export async function run(request: FillRequest): Promise<FillResult> {
+  const check = () => {
+    if (
+      (request.deadline && Date.now() >= request.deadline) ||
+      (request.runId &&
+        (window as any).__studioCancelledRuns?.has(request.runId))
+    )
+      throw Error("本次填充已停止或超时。");
+  };
+  check();
   const out: FillResult = {
     titleFound: false,
     bodyFound: false,
@@ -238,6 +257,7 @@ export async function run(request: FillRequest): Promise<FillResult> {
     return out;
   }
   if (title) {
+    check();
     const current = normalize(read(title)),
       expected = normalize(request.title);
     if (current && current !== expected) {
@@ -251,11 +271,13 @@ export async function run(request: FillRequest): Promise<FillResult> {
         events(title);
       }
       await delay(100);
+      check();
       out.titleFilled = normalize(read(title)) === expected;
     }
   }
   if (out.conflict) return out;
   if (model || body) {
+    check();
     const expected = model?.markdown
       ? request.markdown
       : body instanceof HTMLTextAreaElement
@@ -270,6 +292,7 @@ export async function run(request: FillRequest): Promise<FillResult> {
     if (model) {
       model.set(model.markdown ? request.markdown : request.html);
       await delay(350);
+      check();
       out.bodyFilled = normalize(model.get()) === normalize(expected);
     } else if (body instanceof HTMLTextAreaElement) {
       setControl(body, request.markdown);
@@ -279,12 +302,13 @@ export async function run(request: FillRequest): Promise<FillResult> {
       document.designMode.toLowerCase() === "on"
     ) {
       if (normalize(current) !== normalize(expected))
-        await writeRich(body!, request.html, request.text);
+        await writeRich(body!, request.html, request.text, check);
       out.bodyFilled = normalize(read(body!)) === normalize(expected);
     }
   }
   const uploads: Set<string> = ((window as any).__studioImageSubmissions ??=
     new Set<string>());
+  check();
   if (
     (!request.taskId || !uploads.has(request.taskId)) &&
     request.platform === "xiaohongshu" &&
@@ -299,6 +323,7 @@ export async function run(request: FillRequest): Promise<FillResult> {
       for (const [i, img] of request.images.entries()) {
         if (!/^data:image\/(png|jpeg|webp|gif);base64,/.test(img.src)) continue;
         const blob = await (await fetch(img.src)).blob();
+        check();
         dt.items.add(
           new File([blob], `${img.name}-${i}.${blob.type.split("/")[1]}`, {
             type: blob.type,
@@ -306,6 +331,7 @@ export async function run(request: FillRequest): Promise<FillResult> {
         );
       }
       if (dt.files.length) {
+        check();
         input.files = dt.files;
         input.dispatchEvent(new Event("change", { bubbles: true }));
         out.imagesSubmitted = dt.files.length;

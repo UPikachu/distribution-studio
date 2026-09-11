@@ -25,11 +25,18 @@
 - queued → running → awaiting_review → published。
 - running → needs_attention / failed。
 - needs_attention / failed / awaiting_review → 用户继续 → queued。
-- 未运行且未发布的任务 → cancelled。
+- running → cancelling → cancelled；其他未结束任务可直接取消。
+- cancelling 意外退出后恢复为 cancelled；running 意外退出仍恢复为 needs_attention。
 
 `published` 是用户登记状态，必须提供该平台的 HTTPS 链接，不代表客户端独立检查了平台公开页。
 
 运行中任务意外退出后转为 needs_attention，不自动重放。普通排队任务恢复后仍可执行。队列串行执行，避免同时在多个账号页面争抢焦点；待检查任务不阻塞下一账号。
+
+执行阶段记录在可选 `phase` 字段中：打开平台、等待编辑器、检查草稿、填充并核对。旧任务缺少该字段时仍可加载。页面 DOM 就绪即可开始探测，不必等待所有页面资源加载完毕。加载最多等待 30 秒，单次 frame 调用最多 8 秒，整次执行最多 90 秒；超时转为 needs_attention 并释放队列。
+
+每次执行使用独立取消信号和 runId。页面脚本在写入前及异步等待后检查取消标记和截止时间，主进程拒绝迟到结果。收尾最多等待页面确认停止 500 毫秒；无响应时，同账号等待旧脚本的 8 秒有效期结束，其他账号仍可执行。取消不会删除或回滚平台已有内容。
+
+`queue.cancelAll` 先阻止新任务调度，一次事务取消当前所有未结束任务（含预约、失败、待检查），再等待正在运行的任务收尾；已发布和已取消记录保留。操作不改变原有暂停设置。界面使用 Store 推送作为状态来源，避免慢命令返回的旧状态覆盖新进度。
 
 ## 存储与备份
 
