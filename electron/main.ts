@@ -296,6 +296,12 @@ async function command(input: unknown) {
     case "queue.cancelAll":
       await publisher.cancelAll();
       break;
+    case "queue.clearCancelled":
+      store.clearCancelledJobs();
+      break;
+    case "job.delete":
+      store.deleteJob(c.id);
+      break;
     case "queue.pause":
       store.change((s) => {
         s.settings.queuePaused = c.paused;

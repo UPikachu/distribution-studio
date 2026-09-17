@@ -383,6 +383,7 @@ export class Publisher {
       isMainFrame: boolean,
     ) => {
       if (
+        !execution.controller.signal.aborted &&
         isMainFrame &&
         !inPlace &&
         ["inspecting", "filling"].includes(this.store.job(job.id).phase ?? "")

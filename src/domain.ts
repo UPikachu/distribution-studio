@@ -233,8 +233,10 @@ export type Command =
     }
   | { type: "queue.pause"; paused: boolean }
   | { type: "queue.cancelAll" }
+  | { type: "queue.clearCancelled" }
   | { type: "job.retry"; id: string }
   | { type: "job.cancel"; id: string }
+  | { type: "job.delete"; id: string }
   | { type: "job.open"; id: string }
   | { type: "job.confirm"; id: string; url: string }
   | { type: "asset.import" }
