@@ -80,6 +80,90 @@ describe("持久化和版本", () => {
   });
 });
 describe("任务快照与去重", () => {
+  it("删除已取消记录后持久化，保留文章、账号、素材与队列设置", () => {
+    const { store, article, account, dir } = setup();
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const asset = store.addAsset(png, "保留素材.png");
+    store.enqueue(article.id, [account.id], null);
+    const id = store.state.jobs[0].id;
+    store.updateJob(id, { status: "cancelled" }, "取消");
+    const before = structuredClone(store.state);
+    store.deleteJob(id);
+    expect(new Store(dir).state).toEqual({ ...before, jobs: [] });
+    expect(store.assetBuffer(asset)).toEqual(png);
+    store.enqueue(article.id, [account.id], null);
+    expect(store.state.jobs).toHaveLength(1);
+  });
+  it.each([
+    "queued",
+    "running",
+    "cancelling",
+    "failed",
+    "needs_attention",
+    "awaiting_review",
+    "published",
+  ] as const)("拒绝删除 %s 记录", (status) => {
+    const { store, article, account, dir } = setup();
+    store.enqueue(article.id, [account.id], null);
+    const id = store.state.jobs[0].id;
+    store.updateJob(id, { status }, "状态检查");
+    const before = fs.readFileSync(path.join(dir, "workspace.json"), "utf8");
+    expect(() => store.deleteJob(id)).toThrow("只能删除已取消");
+    expect(store.job(id).status).toBe(status);
+    expect(fs.readFileSync(path.join(dir, "workspace.json"), "utf8")).toBe(
+      before,
+    );
+  });
+  it("批量清理只移除已取消记录，保留其他状态且可以重复执行", () => {
+    const { store, article, account, dir } = setup();
+    store.enqueue(article.id, [account.id], null);
+    const template = store.state.jobs[0];
+    store.change((s) => {
+      s.settings.queuePaused = true;
+      s.jobs = (
+        [
+          "cancelled",
+          "cancelled",
+          "queued",
+          "running",
+          "cancelling",
+          "failed",
+          "needs_attention",
+          "awaiting_review",
+          "published",
+        ] as const
+      ).map((status) => ({ ...template, id: randomUUID(), status }));
+    });
+    const before = structuredClone(store.state);
+    store.clearCancelledJobs();
+    expect(store.state).toEqual({
+      ...before,
+      jobs: before.jobs.filter((j) => j.status !== "cancelled"),
+    });
+    const disk = fs.readFileSync(path.join(dir, "workspace.json"), "utf8");
+    store.clearCancelledJobs();
+    expect(fs.readFileSync(path.join(dir, "workspace.json"), "utf8")).toBe(
+      disk,
+    );
+    expect(() => store.enqueue(article.id, [account.id], null)).toThrow("相同");
+  });
+  it("删除命令校验 ID 和多余参数", () => {
+    const id = randomUUID();
+    expect(parseCommand({ type: "job.delete", id })).toEqual({
+      type: "job.delete",
+      id,
+    });
+    expect(parseCommand({ type: "queue.clearCancelled" })).toEqual({
+      type: "queue.clearCancelled",
+    });
+    expect(() => parseCommand({ type: "job.delete", id: "bad" })).toThrow();
+    expect(() =>
+      parseCommand({ type: "queue.clearCancelled", all: true }),
+    ).toThrow();
+  });
   it("修改主稿不改变队列内容", () => {
     const { store, article, account } = setup();
     store.enqueue(article.id, [account.id], null);

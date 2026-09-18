@@ -272,6 +272,9 @@ function App() {
   const counts = state.jobs.filter(
     (j) => !["published", "cancelled"].includes(j.status),
   ).length;
+  const cancelledCount = state.jobs.filter(
+    (j) => j.status === "cancelled",
+  ).length;
   const articles = state.articles.filter(
     (a) =>
       (filter === "全部内容" || a.collection === filter) &&
@@ -751,6 +754,22 @@ function App() {
                 </div>
                 <div className="job-actions">
                   <button
+                    disabled={busy || !cancelledCount}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          `清理全部 ${cancelledCount} 条已取消记录？仅删除本地任务记录和执行日志，不删除原稿、素材或平台文章。删除后无法从任务中心恢复。`,
+                        )
+                      )
+                        return;
+                      if (await act({ type: "queue.clearCancelled" }))
+                        notify("已清理已取消的任务记录");
+                    }}
+                  >
+                    <Trash2 size={16} />
+                    清理已取消记录（{cancelledCount}）
+                  </button>
+                  <button
                     disabled={
                       !state.jobs.some(
                         (j) => !["published", "cancelled"].includes(j.status),
@@ -883,6 +902,25 @@ function App() {
                           {j.status === "cancelled" ? "重新执行" : "继续填充"}
                         </button>
                       )}
+                      {j.status === "cancelled" && (
+                        <button
+                          className="small"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                `删除「${j.snapshot.title}」的任务记录？仅删除本地任务记录和执行日志，不删除原稿、素材或平台文章。删除后无法从任务中心恢复。`,
+                              )
+                            )
+                              return;
+                            if (await act({ type: "job.delete", id: j.id }))
+                              notify("任务记录已删除");
+                          }}
+                        >
+                          <Trash2 size={14} />
+                          删除记录
+                        </button>
+                      )}
                       {["awaiting_review", "needs_attention"].includes(
                         j.status,
                       ) && (
@@ -902,9 +940,10 @@ function App() {
                         j.status,
                       ) && (
                         <button
-                          className="text-button"
+                          className="small"
                           onClick={() => act({ type: "job.cancel", id: j.id })}
                         >
+                          <X size={14} />
                           取消任务
                         </button>
                       )}

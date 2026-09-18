@@ -26,6 +26,175 @@ test.afterEach(async () => {
   await client?.close();
   fs.rmSync(data, { recursive: true, force: true });
 });
+test("删除与批量清理已取消记录：确认、保留排队任务和重启持久化", async () => {
+  await page.getByRole("button", { name: "新建文章", exact: true }).click();
+  await page.getByLabel("文章标题").fill("任务清理测试");
+  await page.getByLabel("文章正文").fill("保留这份原稿");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator(".save-status")).toHaveText(/已保存/);
+  await page.evaluate(async () => {
+    await window.studio.command({ type: "queue.pause", paused: true });
+    const s = await window.studio.command({
+      type: "account.add",
+      platform: "wechat",
+      name: "清理测试账号",
+    });
+    for (let i = 0; i < 4; i++) {
+      const next = await window.studio.command({
+        type: "queue.add",
+        articleId: s.articles[0].id,
+        accountIds: [s.accounts[0].id],
+        scheduledAt: null,
+      });
+      if (i < 3)
+        await window.studio.command({
+          type: "job.cancel",
+          id: next.jobs[0].id,
+        });
+    }
+  });
+  await page.getByRole("button", { name: "分发任务", exact: false }).click();
+  await expect(page.locator(".job-card")).toHaveCount(4);
+  await client.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setSize(1080, 800);
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+  await page.screenshot({
+    path: "test-results/task-deletion.png",
+    fullPage: true,
+  });
+  await expect(
+    page.getByRole("button", { name: "删除记录", exact: true }),
+  ).toHaveCount(3);
+  await expect(
+    page
+      .locator(".job-card")
+      .filter({ hasText: "等待执行" })
+      .getByRole("button", { name: "删除记录", exact: true }),
+  ).toHaveCount(0);
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("不删除原稿、素材或平台文章");
+    await dialog.dismiss();
+  });
+  await page
+    .getByRole("button", { name: "删除记录", exact: true })
+    .first()
+    .click();
+  await expect(page.locator(".job-card")).toHaveCount(4);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "删除记录", exact: true })
+    .first()
+    .click();
+  await expect(page.locator(".job-card")).toHaveCount(3);
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page
+    .getByRole("button", { name: "清理已取消记录（2）", exact: true })
+    .click();
+  await expect(page.locator(".job-card")).toHaveCount(3);
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("2 条已取消记录");
+    await dialog.accept();
+  });
+  await page
+    .getByRole("button", { name: "清理已取消记录（2）", exact: true })
+    .click();
+  await expect(page.locator(".job-card")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "清理已取消记录（0）", exact: true }),
+  ).toBeDisabled();
+  await client.close();
+  await launch();
+  const restored = (await page.evaluate(() => window.studio.bootstrap())).state;
+  expect(restored.jobs).toHaveLength(1);
+  expect(restored.jobs[0].status).toBe("queued");
+  expect(restored.articles[0].markdown).toBe("保留这份原稿");
+  expect(restored.accounts).toHaveLength(1);
+  expect(restored.settings.queuePaused).toBe(true);
+  await page.getByRole("button", { name: "分发任务", exact: false }).click();
+  await page.getByRole("button", { name: "取消任务", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除记录", exact: true }).click();
+  await expect(page.locator(".job-card")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "返回内容工作台", exact: true }),
+  ).toBeVisible();
+});
+
+test("运行中取消后删除记录，迟到的平台跳转回调不报错", async () => {
+  await page.getByRole("button", { name: "新建文章", exact: true }).click();
+  await page.getByLabel("文章标题").fill("取消后删除");
+  await page.getByLabel("文章正文").fill("测试正文");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator(".save-status")).toHaveText(/已保存/);
+  const setup = await page.evaluate(async () => {
+    const s = await window.studio.command({
+      type: "account.add",
+      platform: "wechat",
+      name: "跳转测试",
+    });
+    return { accountId: s.accounts[0].id, articleId: s.articles[0].id };
+  });
+  await client.evaluate(({ session }, id) => {
+    session
+      .fromPartition(`persist:account-${id}`)
+      .protocol.handle(
+        "https",
+        () =>
+          new Response("<html><body>等待编辑器</body></html>", {
+            headers: { "content-type": "text/html" },
+          }),
+      );
+  }, setup.accountId);
+  const jobId = await page.evaluate(async ({ accountId, articleId }) => {
+    const s = await window.studio.command({
+      type: "queue.add",
+      articleId,
+      accountIds: [accountId],
+      scheduledAt: null,
+    });
+    return s.jobs[0].id;
+  }, setup);
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.studio.bootstrap())).state.jobs[0]
+          .phase,
+    )
+    .toBe("waiting");
+  // Keep a callback captured before cancellation to deterministically exercise a late event.
+  const listeners = await client.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((w) =>
+      w.webContents.getURL().includes("mp.weixin.qq.com"),
+    )!;
+    (win as any).__lateNavigation = win.webContents.listeners(
+      "did-start-navigation",
+    );
+    return (win as any).__lateNavigation.length;
+  });
+  expect(listeners).toBeGreaterThan(0);
+  await page.evaluate(async (id) => {
+    await window.studio.command({ type: "job.cancel", id });
+    await window.studio.command({ type: "job.delete", id });
+  }, jobId);
+  await client.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((w) =>
+      w.webContents.getURL().includes("mp.weixin.qq.com"),
+    )!;
+    for (const callback of (win as any).__lateNavigation)
+      callback({}, "https://mp.weixin.qq.com/", false, true);
+  });
+  expect(
+    (await page.evaluate(() => window.studio.bootstrap())).state.jobs,
+  ).toHaveLength(0);
+});
+
 test("编辑、平台稿、图片、重启与导出备份", async () => {
   await page.getByRole("button", { name: "新建文章", exact: true }).click();
   await page.getByLabel("文章标题").fill("链上说明书：一份主稿，多平台表达");
@@ -147,7 +316,9 @@ test("真实 Electron 窗口：队列填充、重复拦截与人工登记", asyn
     .fill("## 完整正文\n\n测试强调 **内容** 与列表。\n\n- 第一步\n- 第二步");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByRole("button", { name: "分发", exact: true }).click();
-  await expect(page.getByRole("button", { name: "创建 0 个任务" })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "创建 0 个任务" }),
+  ).toBeDisabled();
   await expect(page.locator(".account-picker input:checked")).toHaveCount(0);
   await page.getByRole("button", { name: "全选", exact: true }).click();
   await page.getByRole("button", { name: "创建 1 个任务" }).click();
@@ -225,7 +396,9 @@ test("已有草稿不覆盖", async () => {
   await page.getByLabel("文章正文").fill("新的正文");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.getByRole("button", { name: "分发", exact: true }).click();
-  await expect(page.getByRole("button", { name: "创建 0 个任务" })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "创建 0 个任务" }),
+  ).toBeDisabled();
   await expect(page.locator(".account-picker input:checked")).toHaveCount(0);
   await page.getByRole("button", { name: "全选", exact: true }).click();
   await page.getByRole("button", { name: "创建 1 个任务" }).click();

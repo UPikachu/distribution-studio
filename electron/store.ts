@@ -174,6 +174,19 @@ export class Store {
       j.logs = [...j.logs, { at: j.updatedAt, message }].slice(-200);
     });
   }
+  deleteJob(id: string) {
+    if (this.job(id).status !== "cancelled")
+      throw Error("只能删除已取消的任务记录，请先取消任务并等待结束。");
+    this.change((s) => {
+      s.jobs = s.jobs.filter((j) => j.id !== id);
+    });
+  }
+  clearCancelledJobs() {
+    if (!this.state.jobs.some((j) => j.status === "cancelled")) return;
+    this.change((s) => {
+      s.jobs = s.jobs.filter((j) => j.status !== "cancelled");
+    });
+  }
   retry(id: string) {
     const job = this.job(id);
     if (
