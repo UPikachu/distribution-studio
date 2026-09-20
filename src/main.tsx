@@ -987,7 +987,7 @@ function App() {
             <div className="info-banner">
               <AlertCircle size={17} />
               <span>
-                “编辑器可用”只表示检测到编辑页面，不代表身份认证通过。首次分发前请核对窗口中的账号。
+                “编辑器已验证”表示最近一次检查识别到标题和正文，不代表平台账号永久在线。首次分发前请核对窗口中的账号。
               </span>
             </div>
             <div className="account-grid">
@@ -1002,8 +1002,10 @@ function App() {
                       }
                     >
                       {a.status === "editor_ready"
-                        ? "编辑器可用"
-                        : "待登录 / 检查"}
+                        ? "编辑器已验证"
+                        : a.status === "needs_login"
+                          ? "需要登录"
+                          : "未验证编辑器"}
                     </span>
                   </div>
                   <h3>{a.name}</h3>
@@ -1030,13 +1032,18 @@ function App() {
                           type: "account.check",
                           id: a.id,
                         });
-                        if (s)
+                        if (s) {
+                          // The command response is the final persisted result.
+                          // Apply it directly as well as accepting store pushes so
+                          // the card cannot remain stale after a successful probe.
+                          setState(s);
                           notify(
                             s.accounts.find((x) => x.id === a.id)?.status ===
                               "editor_ready"
                               ? "已识别标题与正文编辑器"
                               : "请在平台窗口登录并打开文章编辑页",
                           );
+                        }
                       }}
                     >
                       <RefreshCw size={14} />

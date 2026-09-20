@@ -25,7 +25,11 @@ const titleSelectors: Record<string, string[]> = {
   zhihu: ["textarea.WriteIndex-titleInput", 'textarea[placeholder*="标题"]'],
   csdn: ["#txtTitle", 'input[placeholder*="标题"]'],
   xiaohongshu: ['input[placeholder*="标题"]'],
-  baijiahao: ["#title", 'textarea[placeholder*="标题"]'],
+  baijiahao: [
+    '[data-lexical-editor="true"][contenteditable="true"]',
+    "#title",
+    'textarea[placeholder*="标题"]',
+  ],
   sohu: ['input[placeholder*="标题"]'],
   toutiao: ['textarea[placeholder*="标题"]'],
   netease: ['input[placeholder*="标题"]'],
@@ -180,7 +184,7 @@ function modelEditor(): {
       set: (s) => tiny.setContent(s),
       markdown: false,
     };
-  const ue = Object.values(w.UE?.instants ?? {}).find(
+  const ue = Object.values(w.UE_V2?.instants ?? w.UE?.instants ?? {}).find(
     (v: any) => v.isReady && (v.body || v.document),
   ) as any;
   if (ue)

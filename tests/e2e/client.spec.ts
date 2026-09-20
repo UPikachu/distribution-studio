@@ -142,15 +142,13 @@ test("运行中取消后删除记录，迟到的平台跳转回调不报错", as
     return { accountId: s.accounts[0].id, articleId: s.articles[0].id };
   });
   await client.evaluate(({ session }, id) => {
-    session
-      .fromPartition(`persist:account-${id}`)
-      .protocol.handle(
-        "https",
-        () =>
-          new Response("<html><body>等待编辑器</body></html>", {
-            headers: { "content-type": "text/html" },
-          }),
-      );
+    session.fromPartition(`persist:account-${id}`).protocol.handle(
+      "https",
+      () =>
+        new Response("<html><body>等待编辑器</body></html>", {
+          headers: { "content-type": "text/html" },
+        }),
+    );
   }, setup.accountId);
   const jobId = await page.evaluate(async ({ accountId, articleId }) => {
     const s = await window.studio.command({
@@ -791,4 +789,43 @@ test("百家号 stoken 登录与注册 HTTP 回跳升级为 HTTPS", async () => 
     remote.getByRole("heading", { name: "已进入创作页" }),
   ).toBeVisible();
   await expect(remote).toHaveURL("https://baijiahao.baidu.com/builder/rc/home");
+});
+
+test("百家号新版编辑器检查后立即更新账号卡片状态", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "baijiahao",
+      name: "百家号新版编辑器",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    session.fromPartition(`persist:account-${id}`).protocol.handle(
+      "https",
+      () =>
+        new Response(
+          `<meta charset="utf-8">
+             <div data-lexical-editor="true" contenteditable="true" style="width:500px;height:50px"></div>
+             <script>
+               window.UE_V2 = { instants: { editor: {
+                 isReady: true,
+                 body: {},
+                 value: "",
+                 getContentTxt() { return this.value; },
+                 setContent(value) { this.value = value.replace(/<[^>]+>/g, ""); }
+               } } };
+             </script>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        ),
+    );
+  }, accountId);
+  await page.getByRole("button", { name: "平台账号", exact: true }).click();
+  const card = page.locator(".account-card").filter({
+    has: page.getByRole("heading", { name: "百家号新版编辑器" }),
+  });
+  await expect(card.getByText("未验证编辑器", { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: "检查", exact: true }).click();
+  await expect(card.getByText("编辑器已验证", { exact: true })).toBeVisible();
+  await expect(card.getByText(/最近检查/)).toBeVisible();
 });
