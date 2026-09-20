@@ -34,7 +34,8 @@ const titleSelectors: Record<string, string[]> = {
 const bodySelectors: Record<string, string[]> = {
   wechat: [
     '.ProseMirror[contenteditable="true"]',
-    "#ueditor_0",
+    '#ueditor_0[contenteditable="true"]',
+    '.edui-body-container[contenteditable="true"]',
     '[contenteditable="true"][data-placeholder*="正文"]',
   ],
   zhihu: [
@@ -94,14 +95,24 @@ function visible(e: Element) {
     !h.hasAttribute("disabled")
   );
 }
-function find(selectors: string[]): HTMLElement | null {
+function find(
+  selectors: string[],
+  accept: (e: HTMLElement) => boolean = () => true,
+): HTMLElement | null {
   for (const selector of selectors)
     for (const root of roots())
       for (const e of root.querySelectorAll(selector))
-        if (visible(e)) return e as HTMLElement;
+        if (visible(e) && accept(e as HTMLElement)) return e as HTMLElement;
   return null;
 }
 function read(e: HTMLElement): string {
+  // WeChat renders its empty-body hint inside the editable document.
+  const hint = '.editor_content_placeholder[contenteditable="false"]';
+  if (e.querySelector(hint)) {
+    const content = e.cloneNode(true) as HTMLElement;
+    content.querySelectorAll(hint).forEach((node) => node.remove());
+    return content.textContent ?? "";
+  }
   return "value" in e
     ? String(e.value ?? "")
     : (e.innerText ?? e.textContent ?? "");
@@ -119,6 +130,10 @@ function select(e: HTMLElement) {
   e.focus();
   const r = document.createRange();
   r.selectNodeContents(e);
+  const hint = e.querySelector(
+    ':scope > .editor_content_placeholder[contenteditable="false"]',
+  );
+  if (hint) r.setStartAfter(hint);
   const s = getSelection();
   s?.removeAllRanges();
   s?.addRange(r);
@@ -137,9 +152,19 @@ async function writeRich(
   html: string,
   text: string,
   check: () => void,
+  pasteFirst = true,
 ) {
   check();
   select(e);
+  // WeChat's synthetic paste can insert plain text asynchronously and leave
+  // its selection collapsed, causing a subsequent HTML fallback to append.
+  if (!pasteFirst) {
+    document.execCommand("insertHTML", false, html);
+    events(e);
+    await delay(500);
+    check();
+    return;
+  }
   const transfer = new DataTransfer();
   transfer.setData("text/html", html);
   transfer.setData("text/plain", text);
@@ -215,10 +240,19 @@ export async function run(request: FillRequest): Promise<FillResult> {
     ...titleFallback,
   ]);
   const model = modelEditor();
-  let body = find([
-    ...(bodySelectors[request.platform] ?? []),
-    ...bodyFallback,
-  ]);
+  let body = find(
+    [...(bodySelectors[request.platform] ?? []), ...bodyFallback],
+    (candidate) =>
+      candidate !== title &&
+      !candidate.contains(title) &&
+      !/标题|摘要|简介|summary|description/i.test(
+        [
+          candidate.id,
+          candidate.getAttribute("placeholder"),
+          candidate.getAttribute("data-placeholder"),
+        ].join(" "),
+      ),
+  );
   if (!body && document.designMode.toLowerCase() === "on") body = document.body;
   if (body === title) body = null;
   if (
@@ -302,7 +336,13 @@ export async function run(request: FillRequest): Promise<FillResult> {
       document.designMode.toLowerCase() === "on"
     ) {
       if (normalize(current) !== normalize(expected))
-        await writeRich(body!, request.html, request.text, check);
+        await writeRich(
+          body!,
+          request.html,
+          request.text,
+          check,
+          request.platform !== "wechat",
+        );
       out.bodyFilled = normalize(read(body!)) === normalize(expected);
     }
   }

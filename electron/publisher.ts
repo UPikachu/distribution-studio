@@ -12,6 +12,11 @@ import { makePreview } from "./content";
 import type { FillRequest, FillResult } from "./inject";
 import { Execution } from "./execution";
 import { randomUUID } from "node:crypto";
+function frameWasDisposed(error: unknown) {
+  return /Render frame was disposed before WebFrameMain could be accessed/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
 export class Publisher {
   windows = new Map<string, BrowserWindow>();
   busy = false;
@@ -169,36 +174,52 @@ export class Publisher {
     execution = new Execution(),
   ): Promise<FillResult[]> {
     execution.check();
+    if (win.isDestroyed() || win.webContents.isDestroyed())
+      throw Error("平台窗口已关闭，请重新打开后继续。");
     if (!allowedPlatformUrl(account.platform, win.webContents.getURL()))
       throw Error("当前不是该平台的安全页面。");
     const bundle = fs.readFileSync(this.bundlePath, "utf8");
     const result: FillResult[] = [];
-    // Cross-origin editors (for example CSDN's editor iframe) are handled per permitted frame.
-    for (const frame of win.webContents.mainFrame.framesInSubtree) {
-      execution.check();
-      if (
-        frame.url !== "about:blank" &&
-        !allowedPlatformUrl(account.platform, frame.url)
-      )
-        continue;
-      try {
-        const deadline = Math.min(Date.now() + 8000, execution.deadline);
-        execution.leaseUntil = Math.max(execution.leaseUntil, deadline);
-        const r = await execution.wait(
-          frame.executeJavaScript(
-            `${bundle}\nStudioAdapter.run(${JSON.stringify({ ...request, deadline })})`,
-            true,
-          ),
-          8000,
-          "编辑器脚本响应超时，请检查平台草稿后继续。",
-        );
-        result.push(r as FillResult);
-      } catch (e) {
+    try {
+      const mainFrame = win.webContents.mainFrame;
+      // Snapshot handles can become invalid while awaiting another frame's script.
+      // Keep both enumeration and URL access inside the lifetime error boundary.
+      for (const frame of mainFrame.framesInSubtree) {
         execution.check();
-        if (frame === win.webContents.mainFrame) throw e;
+        if (
+          frame.url !== "about:blank" &&
+          !allowedPlatformUrl(account.platform, frame.url)
+        )
+          continue;
+        try {
+          const deadline = Math.min(Date.now() + 8000, execution.deadline);
+          execution.leaseUntil = Math.max(execution.leaseUntil, deadline);
+          const r = await execution.wait(
+            frame.executeJavaScript(
+              `${bundle}\nStudioAdapter.run(${JSON.stringify({ ...request, deadline })})`,
+              true,
+            ),
+            8000,
+            "编辑器脚本响应超时，请检查平台草稿后继续。",
+          );
+          result.push(r as FillResult);
+        } catch (e) {
+          execution.check();
+          if (frame === mainFrame || frameWasDisposed(e)) throw e;
+        }
       }
+      return result;
+    } catch (error) {
+      execution.check();
+      if (win.isDestroyed() || win.webContents.isDestroyed())
+        throw Error("平台窗口已关闭，请重新打开后继续。");
+      if (!frameWasDisposed(error)) throw error;
+      // The bounded probe loop will reacquire frames. Never replay writes.
+      if (request.mode === "probe") return [];
+      throw Error(
+        "平台页面已切换或编辑器已关闭，本次填充已停止。请检查平台草稿，待页面加载完成后再继续填充。",
+      );
     }
-    return result;
   }
   async check(id: string) {
     const a = this.account(id),
