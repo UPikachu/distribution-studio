@@ -883,3 +883,48 @@ test("百家号新版编辑器检查后立即更新账号卡片状态", async ()
   await expect(card.getByText("编辑器已验证", { exact: true })).toBeVisible();
   await expect(card.getByText(/最近检查/)).toBeVisible();
 });
+
+test("今日头条账号窗口使用完整 Chrome 浏览器身份", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "toutiao",
+      name: "头条登录身份测试",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    session.fromPartition(`persist:account-${id}`).protocol.handle(
+      "https",
+      () =>
+        new Response("<html><body>identity</body></html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    );
+  }, accountId);
+  const opened = client.waitForEvent("window");
+  await page.evaluate(
+    (id) => window.studio.command({ type: "account.open", id }),
+    accountId,
+  );
+  const remote = await opened;
+  const identity = await remote.evaluate(() => {
+    const agentData = (
+      navigator as Navigator & {
+        userAgentData?: {
+          brands: { brand: string }[];
+          platform: string;
+        };
+      }
+    ).userAgentData;
+    return {
+      userAgent: navigator.userAgent,
+      brands: agentData?.brands.map((item) => item.brand) ?? [],
+      platform: agentData?.platform,
+    };
+  });
+  expect(identity.userAgent).toContain("Chrome/");
+  expect(identity.userAgent).not.toContain("Electron/");
+  expect(identity.brands).toContain("Google Chrome");
+  expect(identity.platform).toBe("macOS");
+});
