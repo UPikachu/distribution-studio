@@ -832,10 +832,53 @@ p {
   padding: 23px;
   min-width: 0;
 }
+.account-card {
+  position: relative;
+  transition:
+    opacity 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+.account-card.dragging {
+  opacity: 0.5;
+  transform: scale(0.985);
+}
+.account-card.drop-before {
+  box-shadow: inset 4px 0 #6f9361;
+}
+.account-card.drop-after {
+  box-shadow: inset -4px 0 #6f9361;
+}
 .account-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.account-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.account-drag-handle {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9aa88f;
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.account-drag-handle:hover,
+.account-drag-handle:focus-visible {
+  color: #426c54;
+  background: #edf3e7;
+}
+.account-drag-handle:active {
+  cursor: grabbing;
 }
 .account-status {
   font-size: 9px;

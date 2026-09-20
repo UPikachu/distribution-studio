@@ -26,6 +26,60 @@ test.afterEach(async () => {
   await client?.close();
   fs.rmSync(data, { recursive: true, force: true });
 });
+test("拖动调整平台账号顺序并在重启后保留", async () => {
+  await page.evaluate(async () => {
+    await window.studio.command({
+      type: "account.add",
+      platform: "zhihu",
+      name: "知乎主账号",
+    });
+    await window.studio.command({
+      type: "account.add",
+      platform: "wechat",
+      name: "公众号主账号",
+    });
+    await window.studio.command({
+      type: "account.add",
+      platform: "csdn",
+      name: "CSDN 主账号",
+    });
+  });
+  await page.getByRole("button", { name: "平台账号", exact: false }).click();
+  const cards = page.locator(".account-card");
+  await expect(cards.locator("h3")).toHaveText([
+    "知乎主账号",
+    "公众号主账号",
+    "CSDN 主账号",
+  ]);
+
+  await cards
+    .filter({ hasText: "CSDN 主账号" })
+    .getByRole("button", { name: "调整CSDN 主账号顺序" })
+    .dragTo(cards.filter({ hasText: "知乎主账号" }), {
+      targetPosition: { x: 20, y: 20 },
+    });
+  await expect(cards.locator("h3")).toHaveText([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+
+  const stored = (await page.evaluate(() => window.studio.bootstrap())).state;
+  expect(stored.accounts.map((account) => account.name)).toEqual([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+  await client.close();
+  await launch();
+  await page.getByRole("button", { name: "平台账号", exact: false }).click();
+  await expect(page.locator(".account-card h3")).toHaveText([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+});
+
 test("删除与批量清理已取消记录：确认、保留排队任务和重启持久化", async () => {
   await page.getByRole("button", { name: "新建文章", exact: true }).click();
   await page.getByLabel("文章标题").fill("任务清理测试");

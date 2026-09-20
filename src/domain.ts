@@ -225,6 +225,7 @@ export type Command =
   | { type: "account.delete"; id: string }
   | { type: "account.open"; id: string }
   | { type: "account.check"; id: string }
+  | { type: "account.reorder"; ids: string[] }
   | {
       type: "queue.add";
       articleId: string;

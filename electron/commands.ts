@@ -18,6 +18,15 @@ const shapes = {
   "account.delete": id,
   "account.open": id,
   "account.check": id,
+  "account.reorder": {
+    ids: z
+      .array(idSchema)
+      .min(1)
+      .max(200)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: "账号排序不能包含重复项",
+      }),
+  },
   "queue.add": {
     articleId: idSchema,
     accountIds: z.array(idSchema).min(1).max(200),

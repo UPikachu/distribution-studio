@@ -290,6 +290,21 @@ async function command(input: unknown) {
     case "account.check":
       await publisher.check(c.id);
       break;
+    case "account.reorder": {
+      const currentIds = store.state.accounts.map((account) => account.id);
+      if (
+        c.ids.length !== currentIds.length ||
+        c.ids.some((id) => !currentIds.includes(id))
+      )
+        throw Error("账号排序与当前账号不一致，请刷新后重试。");
+      store.change((s) => {
+        const accounts = new Map(
+          s.accounts.map((account) => [account.id, account]),
+        );
+        s.accounts = c.ids.map((id) => accounts.get(id)!);
+      });
+      break;
+    }
     case "queue.add":
       store.enqueue(c.articleId, c.accountIds, c.scheduledAt);
       break;
