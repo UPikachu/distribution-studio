@@ -84,6 +84,47 @@ export class Publisher {
     private store: Store,
     private bundlePath: string,
   ) {}
+  private diagnostic(event: string, details: Record<string, unknown> = {}) {
+    try {
+      fs.appendFileSync(
+        path.join(this.store.directory, "platform-diagnostics.jsonl"),
+        JSON.stringify({ at: new Date().toISOString(), event, ...details }) +
+          "\n",
+        { mode: 0o600 },
+      );
+    } catch {
+      // Diagnostics must never interrupt login.
+    }
+  }
+  private safeLocation(value: string) {
+    try {
+      const url = new URL(value);
+      return `${url.origin}${url.pathname}`;
+    } catch {
+      return "invalid-url";
+    }
+  }
+  private async warmToutiaoSession(win: BrowserWindow, ses: Electron.Session) {
+    const existing = await ses.cookies.get({ name: "tt_webid" });
+    if (existing.some((cookie) => cookie.domain?.endsWith("toutiao.com"))) {
+      this.diagnostic("toutiao.device-context", { state: "existing" });
+      return;
+    }
+    this.diagnostic("toutiao.device-context", { state: "initializing" });
+    await win.loadURL("https://www.toutiao.com/");
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const cookies = await ses.cookies.get({ name: "tt_webid" });
+      if (cookies.some((cookie) => cookie.domain?.endsWith("toutiao.com"))) {
+        this.diagnostic("toutiao.device-context", { state: "ready" });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    this.diagnostic("toutiao.device-context", {
+      state: "cookie-not-observed",
+    });
+  }
   start() {
     this.timer = setInterval(() => void this.tick(), 1500);
   }
@@ -106,6 +147,18 @@ export class Publisher {
     }
     const partition = `persist:account-${a.id}`;
     const ses = session.fromPartition(partition);
+    if (a.platform === "toutiao")
+      ses.webRequest.onCompleted(
+        { urls: ["https://*.toutiao.com/*"] },
+        (details) => {
+          if (details.resourceType === "mainFrame")
+            this.diagnostic("toutiao.request", {
+              method: details.method,
+              statusCode: details.statusCode,
+              location: this.safeLocation(details.url),
+            });
+        },
+      );
     const navigationFilters = platformNavigationFilters(a.platform);
     if (navigationFilters.length)
       ses.webRequest.onBeforeRequest(
@@ -147,6 +200,7 @@ export class Publisher {
       // so the login endpoint never sees Electron's Chromium-only identity.
       await win.loadURL("about:blank");
       await applyChromeIdentity(win);
+      await this.warmToutiaoSession(win, ses);
     }
     const navigate = (url: string) => {
       void win!.loadURL(url).catch((error: Error & { code?: string }) => {
@@ -191,6 +245,13 @@ export class Publisher {
     };
     win.webContents.on("will-navigate", safe);
     win.webContents.on("will-redirect", safe);
+    if (a.platform === "toutiao")
+      win.webContents.on("did-navigate", (_event, url, statusCode) =>
+        this.diagnostic("toutiao.navigation", {
+          statusCode,
+          location: this.safeLocation(url),
+        }),
+      );
     win.webContents.setWindowOpenHandler(({ url }) => {
       const target = platformNavigationUrl(a.platform, url);
       if (target) navigate(target);

@@ -894,13 +894,29 @@ test("今日头条账号窗口使用完整 Chrome 浏览器身份", async () => 
     return state.accounts.at(-1)!.id;
   });
   await client.evaluate(({ session }, id) => {
-    session.fromPartition(`persist:account-${id}`).protocol.handle(
-      "https",
-      () =>
-        new Response("<html><body>identity</body></html>", {
-          headers: { "content-type": "text/html; charset=utf-8" },
-        }),
-    );
+    const accountSession = session.fromPartition(`persist:account-${id}`);
+    accountSession.protocol.handle("https", async (request) => {
+      const url = new URL(request.url);
+      if (url.hostname === "www.toutiao.com") {
+        await accountSession.cookies.set({
+          url: "https://www.toutiao.com/",
+          name: "tt_webid",
+          value: "fixture-device",
+          domain: ".toutiao.com",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+        });
+        return new Response("<html><body>device context</body></html>", {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+          },
+        });
+      }
+      return new Response("<html><body>identity</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
   }, accountId);
   const opened = client.waitForEvent("window");
   await page.evaluate(
@@ -908,6 +924,9 @@ test("今日头条账号窗口使用完整 Chrome 浏览器身份", async () => 
     accountId,
   );
   const remote = await opened;
+  await expect(remote).toHaveURL(
+    "https://mp.toutiao.com/profile_v4/graphic/publish",
+  );
   const identity = await remote.evaluate(() => {
     const agentData = (
       navigator as Navigator & {
@@ -927,4 +946,10 @@ test("今日头条账号窗口使用完整 Chrome 浏览器身份", async () => 
   expect(identity.userAgent).not.toContain("Electron/");
   expect(identity.brands).toContain("Google Chrome");
   expect(identity.platform).toBe("macOS");
+  const diagnostic = fs.readFileSync(
+    path.join(data, "platform-diagnostics.jsonl"),
+    "utf8",
+  );
+  expect(diagnostic).toContain('"state":"ready"');
+  expect(diagnostic).not.toContain("fixture-device");
 });
