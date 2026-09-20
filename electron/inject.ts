@@ -19,6 +19,8 @@ export type FillResult = {
   imagesSubmitted: number;
   conflict: boolean;
   message: string;
+  notice?: string;
+  blocked?: boolean;
 };
 const titleSelectors: Record<string, string[]> = {
   wechat: ["#title", 'textarea[name="title"]', 'input[name="title"]'],
@@ -119,6 +121,66 @@ function read(e: HTMLElement): string {
 }
 function normalize(s: string) {
   return s.replace(/\s/g, "").replace(/\u200b/g, "");
+}
+const wechatRiskText =
+  "当前使用的浏览器插件存在安全隐患，可能影响编辑器功能的正常使用，请禁用插件并联系插件开发者处理。";
+async function dismissWechatRisk(
+  runId: string,
+  check: () => void,
+): Promise<{ notice?: string; blocked?: boolean }> {
+  const dialogs = roots()
+    .flatMap((root) => [
+      ...root.querySelectorAll<HTMLElement>(
+        '[role="dialog"], .weui-desktop-dialog, .weui-dialog, .dialog_wrp',
+      ),
+    ])
+    .filter(
+      (dialog) =>
+        visible(dialog) &&
+        !dialog.closest('[contenteditable="true"]') &&
+        [...dialog.querySelectorAll("p,div,span")].some(
+          (node) =>
+            normalize(node.textContent ?? "") === normalize(wechatRiskText),
+        ),
+    );
+  const dialog = dialogs.find(
+    (candidate) =>
+      !dialogs.some(
+        (other) => other !== candidate && candidate.contains(other),
+      ),
+  );
+  if (!dialog) return {};
+  const prefix = `公众号提示：${wechatRiskText}`;
+  const attempts: Set<string> = ((window as any).__studioWechatRiskAttempts ??=
+    new Set<string>());
+  if (attempts.has(runId))
+    return { blocked: true, notice: `${prefix} 提示再次出现，请人工检查。` };
+  const buttons = [
+    ...dialog.querySelectorAll<HTMLElement>('button,a,[role="button"]'),
+  ].filter(
+    (button) =>
+      visible(button) &&
+      button.getAttribute("aria-disabled") !== "true" &&
+      normalize(button.textContent ?? "") === "我知道了",
+  );
+  if (buttons.length !== 1)
+    return {
+      blocked: true,
+      notice: `${prefix} 未能定位唯一的“我知道了”按钮，请人工处理。`,
+    };
+  check();
+  attempts.add(runId);
+  if (attempts.size > 100) attempts.delete(attempts.values().next().value!);
+  buttons[0].click();
+  for (let i = 0; i < 5; i++) {
+    await delay(100);
+    check();
+    if (!dialog.isConnected || !visible(dialog))
+      return {
+        notice: `${prefix} 已点击“我知道了”并确认弹窗已关闭；关闭不代表风险已消除。`,
+      };
+  }
+  return { blocked: true, notice: `${prefix} 未能关闭弹窗，请人工处理。` };
 }
 function events(e: HTMLElement) {
   e.dispatchEvent(
@@ -235,6 +297,13 @@ export async function run(request: FillRequest): Promise<FillResult> {
     conflict: false,
     message: "",
   };
+  const handleNotice = async () => {
+    if (request.platform !== "wechat" || !request.runId) return;
+    const notice = await dismissWechatRisk(request.runId, check);
+    if (notice.notice) Object.assign(out, notice);
+  };
+  await handleNotice();
+  if (out.blocked) return out;
   const title = find([
     ...(titleSelectors[request.platform] ?? []),
     ...titleFallback,
@@ -378,6 +447,15 @@ export async function run(request: FillRequest): Promise<FillResult> {
         if (request.taskId) uploads.add(request.taskId);
       }
     }
+  }
+  if (request.platform === "wechat" && request.runId && out.bodyFilled) {
+    const until = Date.now() + 2000;
+    do {
+      await handleNotice();
+      if (out.blocked) break;
+      await delay(100);
+      check();
+    } while (Date.now() < until);
   }
   out.message = out.conflict
     ? out.message

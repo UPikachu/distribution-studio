@@ -191,6 +191,7 @@ export class Publisher {
           !allowedPlatformUrl(account.platform, frame.url)
         )
           continue;
+        let filled: FillResult;
         try {
           const deadline = Math.min(Date.now() + 8000, execution.deadline);
           execution.leaseUntil = Math.max(execution.leaseUntil, deadline);
@@ -202,11 +203,17 @@ export class Publisher {
             8000,
             "编辑器脚本响应超时，请检查平台草稿后继续。",
           );
-          result.push(r as FillResult);
+          filled = r as FillResult;
         } catch (e) {
           execution.check();
           if (frame === mainFrame || frameWasDisposed(e)) throw e;
+          continue;
         }
+        if (filled.notice && request.taskId)
+          this.store.updateJob(request.taskId, {}, filled.notice);
+        if (filled.blocked)
+          throw Error(filled.notice ?? "平台弹窗需要人工处理。");
+        result.push(filled);
       }
       return result;
     } catch (error) {
@@ -470,6 +477,7 @@ export class Publisher {
             ...preview,
             mode: "probe",
             platform: job.platform,
+            taskId: job.id,
             runId,
           },
           execution,
@@ -499,6 +507,7 @@ export class Publisher {
           ...preview,
           mode: "inspect",
           platform: job.platform,
+          taskId: job.id,
           runId,
         },
         execution,

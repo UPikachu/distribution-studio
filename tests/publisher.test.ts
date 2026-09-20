@@ -63,6 +63,30 @@ function setup() {
   return { frame, webContents, win, publisher };
 }
 describe("页面 frame 生命周期", () => {
+  for (const mode of ["probe", "inspect", "fill"] as const)
+    it(`${mode} 阶段子 frame 的弹窗关闭失败会停止任务`, async () => {
+      const { frame, win, publisher } = setup();
+      const after = {
+        url: "https://mp.weixin.qq.com/editor",
+        executeJavaScript: vi.fn(),
+      };
+      frame.framesInSubtree.push(
+        {
+          url: "https://mp.weixin.qq.com/editor",
+          executeJavaScript: async () => ({
+            ...found,
+            blocked: true,
+            notice: "弹窗未能关闭，请人工处理。",
+          }),
+        },
+        after,
+      );
+      await expect(
+        publisher.evaluate(win, account, { ...request, mode }),
+      ).rejects.toThrow("弹窗未能关闭");
+      expect(after.executeJavaScript).not.toHaveBeenCalled();
+    });
+
   it("探测时子 frame 地址读取失效，丢弃本轮结果并允许重新探测", async () => {
     const { frame, win, publisher } = setup();
     frame.framesInSubtree.push({

@@ -57,6 +57,112 @@ async function run(mode: FillRequest["mode"] = "fill"): Promise<FillResult> {
   });
 }
 
+const riskText =
+  "当前使用的浏览器插件存在安全隐患，可能影响编辑器功能的正常使用，请禁用插件并联系插件开发者处理。";
+const riskDialog = `<div role="dialog"><p>${riskText}</p><button>我知道了</button></div>`;
+async function noticeRun(
+  overrides: Partial<FillRequest> = {},
+): Promise<FillResult> {
+  return page.evaluate((r) => (window as any).StudioAdapter.run(r), {
+    ...request,
+    mode: "probe",
+    runId: "notice-test",
+    ...overrides,
+  });
+}
+async function dismissOnClick() {
+  await page.locator('[role="dialog"] button').evaluate((button) => {
+    button.addEventListener("click", () => {
+      (window as any).noticeClicks = ((window as any).noticeClicks ?? 0) + 1;
+      button.closest('[role="dialog"]')!.remove();
+    });
+  });
+}
+
+test("公众号弹窗：准确关闭，同一任务再次出现时停止且不重复点击", async () => {
+  await fixture(riskDialog);
+  await dismissOnClick();
+  expect((await noticeRun()).notice).toContain("确认弹窗已关闭");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.evaluate(
+    (html) => document.body.insertAdjacentHTML("beforeend", html),
+    riskDialog,
+  );
+  await dismissOnClick();
+  expect(await noticeRun()).toMatchObject({ blocked: true });
+  expect(await page.evaluate(() => (window as any).noticeClicks)).toBe(1);
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+test("公众号弹窗：不处理其他提示、正文中的相同内容及其他平台", async () => {
+  await fixture(riskDialog.replace(riskText, "其他提示"));
+  await dismissOnClick();
+  expect((await noticeRun()).notice).toBeUndefined();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await fixture(`<div contenteditable="true">${riskDialog}</div>`);
+  await dismissOnClick();
+  expect((await noticeRun()).notice).toBeUndefined();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await fixture(riskDialog);
+  await dismissOnClick();
+  expect((await noticeRun({ platform: "zhihu" })).notice).toBeUndefined();
+  expect((await noticeRun({ runId: undefined })).notice).toBeUndefined();
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+test("公众号弹窗：点击后仍未关闭则停止填充，保留原稿", async () => {
+  await fixture(
+    riskDialog +
+      '<div class="edui-body-container" contenteditable="true">原有正文</div>',
+  );
+  const result = await noticeRun({ mode: "fill" });
+  expect(result).toMatchObject({
+    blocked: true,
+    titleFilled: false,
+    bodyFilled: false,
+  });
+  expect(result.notice).toContain("未能关闭弹窗");
+  await expect(page.locator("#title")).toHaveValue("");
+  await expect(page.locator(".edui-body-container")).toHaveText("原有正文");
+});
+
+test("公众号弹窗：按钮不唯一时不点击并停止", async () => {
+  await fixture(
+    riskDialog.replace("</div>", "<button>我知道了</button></div>"),
+  );
+  await page.locator('[role="dialog"]').evaluate((dialog) => {
+    dialog.addEventListener("click", () => dialog.remove());
+  });
+  expect(await noticeRun()).toMatchObject({ blocked: true });
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+test("公众号弹窗：填充后延迟出现时关闭，保留已填正文", async () => {
+  await fixture(
+    '<div class="edui-body-container" contenteditable="true" style="height:200px"></div>',
+  );
+  await page.locator(".edui-body-container").evaluate((body, html) => {
+    body.addEventListener(
+      "input",
+      () => {
+        setTimeout(() => {
+          document.body.insertAdjacentHTML("beforeend", html);
+          const dialog = document.querySelector('[role="dialog"]')!;
+          dialog
+            .querySelector("button")!
+            .addEventListener("click", () => dialog.remove());
+        }, 200);
+      },
+      { once: true },
+    );
+  }, riskDialog);
+  const result = await noticeRun({ mode: "fill" });
+  expect(result).toMatchObject({ titleFilled: true, bodyFilled: true });
+  expect(result.notice).toContain("确认弹窗已关闭");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".edui-body-container")).toHaveText("正文与重点。");
+});
+
 test("公众号：识别 edui 正文并保留富文本，重复填充不重复插入", async () => {
   await fixture(
     '<div class="edui-body-container" contenteditable="true" style="height:200px"></div>',
