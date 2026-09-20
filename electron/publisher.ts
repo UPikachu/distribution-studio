@@ -16,57 +16,36 @@ import {
   platformNavigationUrl,
   platformNavigationFilters,
 } from "./platform-navigation";
-
 function chromeIdentity() {
   const fullVersion = process.versions.chrome;
   const version = fullVersion.split(".")[0];
   const mac = process.platform === "darwin";
   const windows = process.platform === "win32";
   const platform = mac ? "macOS" : windows ? "Windows" : "Linux";
-  const system = mac
-    ? "Macintosh; Intel Mac OS X 10_15_7"
-    : windows
-      ? "Windows NT 10.0; Win64; x64"
-      : "X11; Linux x86_64";
+  const system = mac ? "Macintosh; Intel Mac OS X 10_15_7" : windows ? "Windows NT 10.0; Win64; x64" : "X11; Linux x86_64";
   return {
     userAgent: `Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${fullVersion} Safari/537.36`,
     acceptLanguage: "zh-CN,zh;q=0.9,en;q=0.8",
     platform,
     userAgentMetadata: {
-      brands: [
-        { brand: "Not_A Brand", version: "99" },
-        { brand: "Chromium", version },
-        { brand: "Google Chrome", version },
-      ],
-      fullVersionList: [
-        { brand: "Not_A Brand", version: "99.0.0.0" },
-        { brand: "Chromium", version: fullVersion },
-        { brand: "Google Chrome", version: fullVersion },
-      ],
-      fullVersion,
-      platform,
-      platformVersion: mac ? "10.15.7" : windows ? "10.0.0" : "6.0.0",
-      architecture: process.arch === "arm64" ? "arm" : "x86",
-      model: "",
-      mobile: false,
-      bitness: "64",
-      wow64: false,
+      brands: [{ brand: "Not_A Brand", version: "99" }, { brand: "Chromium", version }, { brand: "Google Chrome", version }],
+      fullVersionList: [{ brand: "Not_A Brand", version: "99.0.0.0" }, { brand: "Chromium", version: fullVersion }, { brand: "Google Chrome", version: fullVersion }],
+      fullVersion, platform, platformVersion: mac ? "10.15.7" : windows ? "10.0.0" : "6.0.0",
+      architecture: process.arch === "arm64" ? "arm" : "x86", model: "", mobile: false, bitness: "64", wow64: false,
     },
   };
 }
-
 async function applyChromeIdentity(win: BrowserWindow) {
   try {
     win.webContents.debugger.attach("1.3");
     await win.webContents.debugger.sendCommand("Network.enable");
-    await win.webContents.debugger.sendCommand(
-      "Network.setUserAgentOverride",
-      chromeIdentity(),
-    );
-  } catch {
-    // The app-level fallback still removes Electron from User-Agent if CDP is
-    // unavailable on a future runtime.
-  }
+    await win.webContents.debugger.sendCommand("Network.setUserAgentOverride", chromeIdentity());
+  } catch {}
+}
+function frameWasDisposed(error: unknown) {
+  return /Render frame was disposed before WebFrameMain could be accessed/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 export class Publisher {
   windows = new Map<string, BrowserWindow>();
@@ -142,7 +121,6 @@ export class Publisher {
       win!.setTitle(`${a.name} · ${platforms[a.platform].name}`);
     });
     if (a.platform !== "web") {
-      // Initialize the renderer before overriding Chromium Client Hints.
       await win.loadURL("about:blank");
       await applyChromeIdentity(win);
     }
@@ -269,36 +247,59 @@ export class Publisher {
     execution = new Execution(),
   ): Promise<FillResult[]> {
     execution.check();
+    if (win.isDestroyed() || win.webContents.isDestroyed())
+      throw Error("平台窗口已关闭，请重新打开后继续。");
     if (!allowedPlatformUrl(account.platform, win.webContents.getURL()))
       throw Error("当前不是该平台的安全页面。");
     const bundle = fs.readFileSync(this.bundlePath, "utf8");
     const result: FillResult[] = [];
-    // Cross-origin editors (for example CSDN's editor iframe) are handled per permitted frame.
-    for (const frame of win.webContents.mainFrame.framesInSubtree) {
-      execution.check();
-      if (
-        frame.url !== "about:blank" &&
-        !allowedPlatformUrl(account.platform, frame.url)
-      )
-        continue;
-      try {
-        const deadline = Math.min(Date.now() + 8000, execution.deadline);
-        execution.leaseUntil = Math.max(execution.leaseUntil, deadline);
-        const r = await execution.wait(
-          frame.executeJavaScript(
-            `${bundle}\nStudioAdapter.run(${JSON.stringify({ ...request, deadline })})`,
-            true,
-          ),
-          8000,
-          "编辑器脚本响应超时，请检查平台草稿后继续。",
-        );
-        result.push(r as FillResult);
-      } catch (e) {
+    try {
+      const mainFrame = win.webContents.mainFrame;
+      // Snapshot handles can become invalid while awaiting another frame's script.
+      // Keep both enumeration and URL access inside the lifetime error boundary.
+      for (const frame of mainFrame.framesInSubtree) {
         execution.check();
-        if (frame === win.webContents.mainFrame) throw e;
+        if (
+          frame.url !== "about:blank" &&
+          !allowedPlatformUrl(account.platform, frame.url)
+        )
+          continue;
+        let filled: FillResult;
+        try {
+          const deadline = Math.min(Date.now() + 8000, execution.deadline);
+          execution.leaseUntil = Math.max(execution.leaseUntil, deadline);
+          const r = await execution.wait(
+            frame.executeJavaScript(
+              `${bundle}\nStudioAdapter.run(${JSON.stringify({ ...request, deadline })})`,
+              true,
+            ),
+            8000,
+            "编辑器脚本响应超时，请检查平台草稿后继续。",
+          );
+          filled = r as FillResult;
+        } catch (e) {
+          execution.check();
+          if (frame === mainFrame || frameWasDisposed(e)) throw e;
+          continue;
+        }
+        if (filled.notice && request.taskId)
+          this.store.updateJob(request.taskId, {}, filled.notice);
+        if (filled.blocked)
+          throw Error(filled.notice ?? "平台弹窗需要人工处理。");
+        result.push(filled);
       }
+      return result;
+    } catch (error) {
+      execution.check();
+      if (win.isDestroyed() || win.webContents.isDestroyed())
+        throw Error("平台窗口已关闭，请重新打开后继续。");
+      if (!frameWasDisposed(error)) throw error;
+      // The bounded probe loop will reacquire frames. Never replay writes.
+      if (request.mode === "probe") return [];
+      throw Error(
+        "平台页面已切换或编辑器已关闭，本次填充已停止。请检查平台草稿，待页面加载完成后再继续填充。",
+      );
     }
-    return result;
   }
   async check(id: string) {
     const a = this.account(id),
@@ -549,6 +550,7 @@ export class Publisher {
             ...preview,
             mode: "probe",
             platform: job.platform,
+            taskId: job.id,
             runId,
           },
           execution,
@@ -578,6 +580,7 @@ export class Publisher {
           ...preview,
           mode: "inspect",
           platform: job.platform,
+          taskId: job.id,
           runId,
         },
         execution,

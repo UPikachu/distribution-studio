@@ -19,6 +19,8 @@ export type FillResult = {
   imagesSubmitted: number;
   conflict: boolean;
   message: string;
+  notice?: string;
+  blocked?: boolean;
 };
 const titleSelectors: Record<string, string[]> = {
   wechat: ["#title", 'textarea[name="title"]', 'input[name="title"]'],
@@ -38,7 +40,8 @@ const titleSelectors: Record<string, string[]> = {
 const bodySelectors: Record<string, string[]> = {
   wechat: [
     '.ProseMirror[contenteditable="true"]',
-    "#ueditor_0",
+    '#ueditor_0[contenteditable="true"]',
+    '.edui-body-container[contenteditable="true"]',
     '[contenteditable="true"][data-placeholder*="正文"]',
   ],
   zhihu: [
@@ -98,20 +101,90 @@ function visible(e: Element) {
     !h.hasAttribute("disabled")
   );
 }
-function find(selectors: string[]): HTMLElement | null {
+function find(
+  selectors: string[],
+  accept: (e: HTMLElement) => boolean = () => true,
+): HTMLElement | null {
   for (const selector of selectors)
     for (const root of roots())
       for (const e of root.querySelectorAll(selector))
-        if (visible(e)) return e as HTMLElement;
+        if (visible(e) && accept(e as HTMLElement)) return e as HTMLElement;
   return null;
 }
 function read(e: HTMLElement): string {
+  // WeChat renders its empty-body hint inside the editable document.
+  const hint = '.editor_content_placeholder[contenteditable="false"]';
+  if (e.querySelector(hint)) {
+    const content = e.cloneNode(true) as HTMLElement;
+    content.querySelectorAll(hint).forEach((node) => node.remove());
+    return content.textContent ?? "";
+  }
   return "value" in e
     ? String(e.value ?? "")
     : (e.innerText ?? e.textContent ?? "");
 }
 function normalize(s: string) {
   return s.replace(/\s/g, "").replace(/\u200b/g, "");
+}
+const wechatRiskText =
+  "当前使用的浏览器插件存在安全隐患，可能影响编辑器功能的正常使用，请禁用插件并联系插件开发者处理。";
+async function dismissWechatRisk(
+  runId: string,
+  check: () => void,
+): Promise<{ notice?: string; blocked?: boolean }> {
+  const dialogs = roots()
+    .flatMap((root) => [
+      ...root.querySelectorAll<HTMLElement>(
+        '[role="dialog"], .weui-desktop-dialog, .weui-dialog, .dialog_wrp',
+      ),
+    ])
+    .filter(
+      (dialog) =>
+        visible(dialog) &&
+        !dialog.closest('[contenteditable="true"]') &&
+        [...dialog.querySelectorAll("p,div,span")].some(
+          (node) =>
+            normalize(node.textContent ?? "") === normalize(wechatRiskText),
+        ),
+    );
+  const dialog = dialogs.find(
+    (candidate) =>
+      !dialogs.some(
+        (other) => other !== candidate && candidate.contains(other),
+      ),
+  );
+  if (!dialog) return {};
+  const prefix = `公众号提示：${wechatRiskText}`;
+  const attempts: Set<string> = ((window as any).__studioWechatRiskAttempts ??=
+    new Set<string>());
+  if (attempts.has(runId))
+    return { blocked: true, notice: `${prefix} 提示再次出现，请人工检查。` };
+  const buttons = [
+    ...dialog.querySelectorAll<HTMLElement>('button,a,[role="button"]'),
+  ].filter(
+    (button) =>
+      visible(button) &&
+      button.getAttribute("aria-disabled") !== "true" &&
+      normalize(button.textContent ?? "") === "我知道了",
+  );
+  if (buttons.length !== 1)
+    return {
+      blocked: true,
+      notice: `${prefix} 未能定位唯一的“我知道了”按钮，请人工处理。`,
+    };
+  check();
+  attempts.add(runId);
+  if (attempts.size > 100) attempts.delete(attempts.values().next().value!);
+  buttons[0].click();
+  for (let i = 0; i < 5; i++) {
+    await delay(100);
+    check();
+    if (!dialog.isConnected || !visible(dialog))
+      return {
+        notice: `${prefix} 已点击“我知道了”并确认弹窗已关闭；关闭不代表风险已消除。`,
+      };
+  }
+  return { blocked: true, notice: `${prefix} 未能关闭弹窗，请人工处理。` };
 }
 function events(e: HTMLElement) {
   e.dispatchEvent(
@@ -123,6 +196,10 @@ function select(e: HTMLElement) {
   e.focus();
   const r = document.createRange();
   r.selectNodeContents(e);
+  const hint = e.querySelector(
+    ':scope > .editor_content_placeholder[contenteditable="false"]',
+  );
+  if (hint) r.setStartAfter(hint);
   const s = getSelection();
   s?.removeAllRanges();
   s?.addRange(r);
@@ -141,9 +218,19 @@ async function writeRich(
   html: string,
   text: string,
   check: () => void,
+  pasteFirst = true,
 ) {
   check();
   select(e);
+  // WeChat's synthetic paste can insert plain text asynchronously and leave
+  // its selection collapsed, causing a subsequent HTML fallback to append.
+  if (!pasteFirst) {
+    document.execCommand("insertHTML", false, html);
+    events(e);
+    await delay(500);
+    check();
+    return;
+  }
   const transfer = new DataTransfer();
   transfer.setData("text/html", html);
   transfer.setData("text/plain", text);
@@ -214,15 +301,31 @@ export async function run(request: FillRequest): Promise<FillResult> {
     conflict: false,
     message: "",
   };
+  const handleNotice = async () => {
+    if (request.platform !== "wechat" || !request.runId) return;
+    const notice = await dismissWechatRisk(request.runId, check);
+    if (notice.notice) Object.assign(out, notice);
+  };
+  await handleNotice();
+  if (out.blocked) return out;
   const title = find([
     ...(titleSelectors[request.platform] ?? []),
     ...titleFallback,
   ]);
   const model = modelEditor();
-  let body = find([
-    ...(bodySelectors[request.platform] ?? []),
-    ...bodyFallback,
-  ]);
+  let body = find(
+    [...(bodySelectors[request.platform] ?? []), ...bodyFallback],
+    (candidate) =>
+      candidate !== title &&
+      !candidate.contains(title) &&
+      !/标题|摘要|简介|summary|description/i.test(
+        [
+          candidate.id,
+          candidate.getAttribute("placeholder"),
+          candidate.getAttribute("data-placeholder"),
+        ].join(" "),
+      ),
+  );
   if (!body && document.designMode.toLowerCase() === "on") body = document.body;
   if (body === title) body = null;
   if (
@@ -306,7 +409,13 @@ export async function run(request: FillRequest): Promise<FillResult> {
       document.designMode.toLowerCase() === "on"
     ) {
       if (normalize(current) !== normalize(expected))
-        await writeRich(body!, request.html, request.text, check);
+        await writeRich(
+          body!,
+          request.html,
+          request.text,
+          check,
+          request.platform !== "wechat",
+        );
       out.bodyFilled = normalize(read(body!)) === normalize(expected);
     }
   }
@@ -342,6 +451,15 @@ export async function run(request: FillRequest): Promise<FillResult> {
         if (request.taskId) uploads.add(request.taskId);
       }
     }
+  }
+  if (request.platform === "wechat" && request.runId && out.bodyFilled) {
+    const until = Date.now() + 2000;
+    do {
+      await handleNotice();
+      if (out.blocked) break;
+      await delay(100);
+      check();
+    } while (Date.now() < until);
   }
   out.message = out.conflict
     ? out.message

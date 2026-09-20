@@ -247,6 +247,59 @@ test("运行中取消后删除记录，迟到的平台跳转回调不报错", as
   ).toHaveLength(0);
 });
 
+test("等待编辑器期间页面跳转，重新检测后完成填充", async () => {
+  await page.getByRole("button", { name: "新建文章", exact: true }).click();
+  await page.getByLabel("文章标题").fill("页面跳转填充测试");
+  await page.getByLabel("文章正文").fill("跳转后填入一次正文。");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.locator(".save-status")).toHaveText(/已保存/);
+  const setup = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "wechat",
+      name: "页面跳转测试",
+    });
+    return { accountId: state.accounts[0].id, articleId: state.articles[0].id };
+  });
+  await client.evaluate(({ session }, id) => {
+    session
+      .fromPartition(`persist:account-${id}`)
+      .protocol.handle(
+        "https",
+        (request) =>
+          new Response(
+            request.url.endsWith("/editor")
+              ? '<meta charset="utf-8"><textarea id="title"></textarea><div class="ProseMirror" contenteditable="true" style="height:300px"></div>'
+              : '<meta charset="utf-8"><p>等待跳转</p><script>setTimeout(() => location.replace("/editor"), 1000)</script>',
+            { headers: { "content-type": "text/html" } },
+          ),
+      );
+  }, setup.accountId);
+  await page.evaluate(async ({ accountId, articleId }) => {
+    await window.studio.command({
+      type: "queue.add",
+      accountIds: [accountId],
+      articleId,
+      scheduledAt: null,
+    });
+  }, setup);
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.studio.bootstrap())).state.jobs[0]
+          .status,
+      { timeout: 20000 },
+    )
+    .toBe("awaiting_review");
+  const remote = client
+    .windows()
+    .find((p) => p.url().startsWith("https://mp.weixin.qq.com/"))!;
+  await expect(remote.locator("#title")).toHaveValue("页面跳转填充测试");
+  await expect(remote.locator(".ProseMirror")).toHaveText(
+    "跳转后填入一次正文。",
+  );
+});
+
 test("编辑、平台稿、图片、重启与导出备份", async () => {
   await page.getByRole("button", { name: "新建文章", exact: true }).click();
   await page.getByLabel("文章标题").fill("链上说明书：一份主稿，多平台表达");
@@ -462,7 +515,7 @@ test("已有草稿不覆盖", async () => {
   await expect(remote.locator("[contenteditable]")).toHaveText("旧正文");
 });
 
-test("九个平台夹具与 CSDN 跨域 iframe：同一任务链路", async () => {
+test("九个平台夹具、公众号 iframe 与 CSDN 跨域 iframe：同一任务链路", async () => {
   const setup = await page.evaluate(async () => {
     await window.studio.command({ type: "queue.pause", paused: true });
     const platformIds = [
@@ -517,6 +570,8 @@ test("九个平台夹具与 CSDN 跨域 iframe：同一任务链路", async () =
             '<textarea id="title" placeholder="请输入标题" style="width:500px;height:50px"></textarea>';
           let body =
             '<div class="ProseMirror" contenteditable="true" style="height:300px"></div>';
+          if (a.platform === "wechat")
+            body = `<iframe id="ueditor_0" onload="this.contentDocument.body.contentEditable='true';this.contentDocument.body.style.minHeight='300px'" style="height:400px;width:600px"></iframe>`;
           if (a.platform === "zhihu")
             body =
               '<div class="public-DraftEditor-content" contenteditable="true" style="height:300px"></div>';
@@ -560,6 +615,12 @@ test("九个平台夹具与 CSDN 跨域 iframe：同一任务链路", async () =
     .toEqual(setup.accounts.map((a) => [a.platform, "awaiting_review"]).sort());
   const csdn = client.windows().find((p) => p.url().includes("mp.csdn.net"))!;
   await expect(csdn.frameLocator("iframe").locator("body")).toContainText(
+    "正文与",
+  );
+  const wechat = client
+    .windows()
+    .find((p) => p.url().includes("mp.weixin.qq.com"))!;
+  await expect(wechat.frameLocator("iframe").locator("body")).toContainText(
     "正文与",
   );
 });
