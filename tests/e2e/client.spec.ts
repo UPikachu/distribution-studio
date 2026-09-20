@@ -751,3 +751,103 @@ test("正文冲突预检不先改标题；框架回滚不能误报成功", async
     )
     .toContain("填充回读未通过");
 });
+
+test("知乎登录旧 HTTP 返回地址升级为 HTTPS，保留账号会话", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "zhihu",
+      name: "登录跳转测试",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    let loginSeen = false;
+    const ses = session.fromPartition(`persist:account-${id}`);
+    ses.protocol.handle("https", (request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/signin") {
+        loginSeen = true;
+        return new Response(
+          `<html><body><p id="next">${url.searchParams.get("next")}</p><a href="http://zhuanlan.zhihu.com/write">模拟登录成功</a></body></html>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
+      }
+      if (!loginSeen)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              "https://www.zhihu.com/signin?next=http%3A%2F%2Fzhuanlan.zhihu.com%2Fwrite",
+          },
+        });
+      return new Response("<html><body><h1>已进入创作页</h1></body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+  }, accountId);
+  const opened = client.waitForEvent("window");
+  await page.evaluate(
+    (id) => window.studio.command({ type: "account.open", id }),
+    accountId,
+  );
+  const remote = await opened;
+  await expect(remote.locator("#next")).toHaveText(
+    "https://zhuanlan.zhihu.com/write",
+  );
+  await remote.getByRole("link", { name: "模拟登录成功" }).click();
+  await expect(
+    remote.getByRole("heading", { name: "已进入创作页" }),
+  ).toBeVisible();
+  await expect(remote).toHaveURL("https://zhuanlan.zhihu.com/write");
+});
+
+test("百家号 stoken 登录与注册 HTTP 回跳升级为 HTTPS", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "baijiahao",
+      name: "登录跳转测试",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    let loginSeen = false;
+    const ses = session.fromPartition(`persist:account-${id}`);
+    ses.protocol.handle("https", (request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/builder/fe-react/stoken.html") {
+        loginSeen = true;
+        return new Response(
+          `<html><body><p id="next">${url.searchParams.get("u")}</p><a href="http://baijiahao.baidu.com/builder/rc/home">模拟登录成功</a></body></html>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
+      }
+      if (!loginSeen)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              "https://baijiahao.baidu.com/builder/fe-react/stoken.html?u=http%3A%2F%2Fbaijiahao.baidu.com%2Fbuilder%2Frc%2Fhome",
+          },
+        });
+      return new Response("<html><body><h1>已进入创作页</h1></body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    });
+  }, accountId);
+  const opened = client.waitForEvent("window");
+  await page.evaluate(
+    (id) => window.studio.command({ type: "account.open", id }),
+    accountId,
+  );
+  const remote = await opened;
+  await expect(remote.locator("#next")).toHaveText(
+    "https://baijiahao.baidu.com/builder/rc/home",
+  );
+  await remote.getByRole("link", { name: "模拟登录成功" }).click();
+  await expect(
+    remote.getByRole("heading", { name: "已进入创作页" }),
+  ).toBeVisible();
+  await expect(remote).toHaveURL("https://baijiahao.baidu.com/builder/rc/home");
+});

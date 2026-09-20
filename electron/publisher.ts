@@ -12,6 +12,10 @@ import { makePreview } from "./content";
 import type { FillRequest, FillResult } from "./inject";
 import { Execution } from "./execution";
 import { randomUUID } from "node:crypto";
+import {
+  platformNavigationUrl,
+  platformNavigationFilters,
+} from "./platform-navigation";
 function frameWasDisposed(error: unknown) {
   return /Render frame was disposed before WebFrameMain could be accessed/i.test(
     error instanceof Error ? error.message : String(error),
@@ -55,12 +59,22 @@ export class Publisher {
     }
     const partition = `persist:account-${a.id}`;
     const ses = session.fromPartition(partition);
-    const registrationUrl = "http://baijiahao.baidu.com/pcui/register/index";
-    if (a.platform === "baijiahao")
+    const navigationFilters = platformNavigationFilters(a.platform);
+    if (navigationFilters.length)
       ses.webRequest.onBeforeRequest(
-        { urls: [registrationUrl] },
-        (_details, cb) =>
-          cb({ redirectURL: registrationUrl.replace("http:", "https:") }),
+        { urls: navigationFilters },
+        (details, cb) => {
+          // Do not rewrite API requests, POST bodies, images or signed assets.
+          if (
+            details.resourceType !== "mainFrame" ||
+            details.method !== "GET"
+          ) {
+            cb({});
+            return;
+          }
+          const target = platformNavigationUrl(a.platform, details.url);
+          cb(target && target !== details.url ? { redirectURL: target } : {});
+        },
       );
     ses.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
     ses.setPermissionCheckHandler(() => false);
@@ -81,7 +95,8 @@ export class Publisher {
       win!.setTitle(`${a.name} · ${platforms[a.platform].name}`);
     });
     const navigate = (url: string) => {
-      void win!.loadURL(url).catch(() => {
+      void win!.loadURL(url).catch((error: Error & { code?: string }) => {
+        if (error.code === "ERR_ABORTED") return;
         if (!win!.isDestroyed())
           void dialog.showMessageBox(win!, {
             type: "error",
@@ -90,14 +105,42 @@ export class Publisher {
           });
       });
     };
+    let showingBlockedNavigation = false;
+    const blockedNavigation = (value: string) => {
+      if (showingBlockedNavigation || win!.isDestroyed()) return;
+      showingBlockedNavigation = true;
+      // Never expose login tokens, query parameters, fragments or credentials.
+      let destination = "无法识别的地址";
+      try {
+        const url = new URL(value);
+        destination = url.origin;
+      } catch {}
+      void dialog
+        .showMessageBox(win!, {
+          type: "info",
+          message: "已拦截平台范围外的跳转",
+          detail: `这是分发工作台的导航限制，并非平台风控提示。目标站点：${destination}。若登录停留在原页，请从「平台窗口」菜单重新打开创作入口。`,
+        })
+        .finally(() => {
+          showingBlockedNavigation = false;
+        });
+    };
     const safe = (_event: Electron.Event, url: string) => {
-      if (a.platform === "baijiahao" && url === registrationUrl) return;
-      if (!allowedPlatformUrl(a.platform, url)) _event.preventDefault();
+      const target = platformNavigationUrl(a.platform, url);
+      if (!target) {
+        _event.preventDefault();
+        blockedNavigation(url);
+      } else if (new URL(url).protocol === "http:") {
+        _event.preventDefault();
+        navigate(target);
+      }
     };
     win.webContents.on("will-navigate", safe);
     win.webContents.on("will-redirect", safe);
     win.webContents.setWindowOpenHandler(({ url }) => {
-      if (allowedPlatformUrl(a.platform, url)) navigate(url);
+      const target = platformNavigationUrl(a.platform, url);
+      if (target) navigate(target);
+      else blockedNavigation(url);
       return { action: "deny" };
     });
     win.webContents.on("will-attach-webview", (e) => e.preventDefault());
