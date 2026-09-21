@@ -315,6 +315,10 @@ describe("图片与请求边界", () => {
   it("拒绝未知 IPC 和额外字段", () => {
     expect(() => parseCommand({ type: "run.shell", cmd: "test" })).toThrow();
     expect(() => parseCommand({ type: "data.open", path: "/etc" })).toThrow();
+    const id = "00000000-0000-4000-8000-000000000001";
+    expect(() =>
+      parseCommand({ type: "account.reorder", ids: [id, id] }),
+    ).toThrow();
   });
 });
 

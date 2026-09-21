@@ -30,6 +30,7 @@ import {
   History,
   FolderOpen,
   CheckCircle2,
+  GripVertical,
 } from "lucide-react";
 import {
   newArticle,
@@ -90,6 +91,11 @@ function App() {
     [schedule, setSchedule] = useState("");
   const [confirmJob, setConfirmJob] = useState<Job | null>(null),
     [resultUrl, setResultUrl] = useState("");
+  const [draggedAccount, setDraggedAccount] = useState<string | null>(null),
+    [accountDrop, setAccountDrop] = useState<{
+      id: string;
+      position: "before" | "after";
+    } | null>(null);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const draftRef = useRef(draft);
@@ -97,6 +103,37 @@ function App() {
   const notify = useCallback(
     (text: string, error = false) => setNotice({ text, error }),
     [],
+  );
+  const reorderAccount = useCallback(
+    async (
+      sourceId: string,
+      targetId: string,
+      position: "before" | "after",
+    ) => {
+      const current = state.accounts.map((account) => account.id);
+      const ids = current.filter((id) => id !== sourceId);
+      const targetIndex = ids.indexOf(targetId);
+      if (targetIndex < 0) return;
+      ids.splice(targetIndex + (position === "after" ? 1 : 0), 0, sourceId);
+      if (ids.every((id, index) => id === current[index])) return;
+      const next = await act({ type: "account.reorder", ids });
+      if (next) setState(next);
+    },
+    [state.accounts],
+  );
+  const moveAccount = useCallback(
+    async (id: string, offset: number) => {
+      const index = state.accounts.findIndex((account) => account.id === id);
+      const target = state.accounts[index + offset];
+      if (!target) return;
+      await reorderAccount(id, target.id, offset < 0 ? "before" : "after");
+      requestAnimationFrame(() =>
+        document
+          .querySelector<HTMLElement>(`[data-account-drag="${id}"]`)
+          ?.focus(),
+      );
+    },
+    [reorderAccount, state.accounts],
   );
   useEffect(() => {
     if (!window.studio) {
@@ -987,24 +1024,101 @@ function App() {
             <div className="info-banner">
               <AlertCircle size={17} />
               <span>
-                “编辑器可用”只表示检测到编辑页面，不代表身份认证通过。首次分发前请核对窗口中的账号。
+                “编辑器已验证”表示最近一次检查识别到标题和正文，不代表平台账号永久在线。首次分发前请核对窗口中的账号。拖动卡片右上角手柄可调整顺序。
               </span>
             </div>
             <div className="account-grid">
               {state.accounts.map((a) => (
-                <article className="account-card" key={a.id}>
+                <article
+                  className={
+                    "account-card" +
+                    (draggedAccount === a.id ? " dragging" : "") +
+                    (accountDrop?.id === a.id
+                      ? ` drop-${accountDrop.position}`
+                      : "")
+                  }
+                  key={a.id}
+                  onDragOver={(event) => {
+                    if (!draggedAccount || draggedAccount === a.id) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const vertical = (event.clientY - rect.top) / rect.height;
+                    const horizontal = (event.clientX - rect.left) / rect.width;
+                    const position =
+                      vertical > 0.65 || (vertical >= 0.35 && horizontal > 0.5)
+                        ? "after"
+                        : "before";
+                    if (
+                      accountDrop?.id !== a.id ||
+                      accountDrop.position !== position
+                    )
+                      setAccountDrop({ id: a.id, position });
+                  }}
+                  onDragLeave={(event) => {
+                    if (
+                      !event.currentTarget.contains(event.relatedTarget as Node)
+                    )
+                      setAccountDrop(null);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const sourceId =
+                      draggedAccount ||
+                      event.dataTransfer.getData("text/plain");
+                    const position = accountDrop?.position ?? "before";
+                    setDraggedAccount(null);
+                    setAccountDrop(null);
+                    if (sourceId && sourceId !== a.id)
+                      void reorderAccount(sourceId, a.id, position);
+                  }}
+                >
                   <div className="account-top">
                     <Badge platform={a.platform} />
-                    <span
-                      className={
-                        "account-status " +
-                        (a.status === "editor_ready" ? "good" : "")
-                      }
-                    >
-                      {a.status === "editor_ready"
-                        ? "编辑器可用"
-                        : "待登录 / 检查"}
-                    </span>
+                    <div className="account-top-actions">
+                      <span
+                        className={
+                          "account-status " +
+                          (a.status === "editor_ready" ? "good" : "")
+                        }
+                      >
+                        {a.status === "editor_ready"
+                          ? "编辑器已验证"
+                          : a.status === "needs_login"
+                            ? "需要登录"
+                            : "未验证编辑器"}
+                      </span>
+                      <button
+                        type="button"
+                        className="account-drag-handle"
+                        draggable
+                        data-account-drag={a.id}
+                        aria-label={`调整${a.name}顺序`}
+                        title="拖动排序；也可用方向键调整"
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", a.id);
+                          setDraggedAccount(a.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedAccount(null);
+                          setAccountDrop(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (["ArrowLeft", "ArrowUp"].includes(event.key)) {
+                            event.preventDefault();
+                            void moveAccount(a.id, -1);
+                          } else if (
+                            ["ArrowRight", "ArrowDown"].includes(event.key)
+                          ) {
+                            event.preventDefault();
+                            void moveAccount(a.id, 1);
+                          }
+                        }}
+                      >
+                        <GripVertical size={16} />
+                      </button>
+                    </div>
                   </div>
                   <h3>{a.name}</h3>
                   <p>{platforms[a.platform].name} · 独立会话</p>
@@ -1030,13 +1144,18 @@ function App() {
                           type: "account.check",
                           id: a.id,
                         });
-                        if (s)
+                        if (s) {
+                          // The command response is the final persisted result.
+                          // Apply it directly as well as accepting store pushes so
+                          // the card cannot remain stale after a successful probe.
+                          setState(s);
                           notify(
                             s.accounts.find((x) => x.id === a.id)?.status ===
                               "editor_ready"
                               ? "已识别标题与正文编辑器"
                               : "请在平台窗口登录并打开文章编辑页",
                           );
+                        }
                       }}
                     >
                       <RefreshCw size={14} />

@@ -26,6 +26,60 @@ test.afterEach(async () => {
   await client?.close();
   fs.rmSync(data, { recursive: true, force: true });
 });
+test("拖动调整平台账号顺序并在重启后保留", async () => {
+  await page.evaluate(async () => {
+    await window.studio.command({
+      type: "account.add",
+      platform: "zhihu",
+      name: "知乎主账号",
+    });
+    await window.studio.command({
+      type: "account.add",
+      platform: "wechat",
+      name: "公众号主账号",
+    });
+    await window.studio.command({
+      type: "account.add",
+      platform: "csdn",
+      name: "CSDN 主账号",
+    });
+  });
+  await page.getByRole("button", { name: "平台账号", exact: false }).click();
+  const cards = page.locator(".account-card");
+  await expect(cards.locator("h3")).toHaveText([
+    "知乎主账号",
+    "公众号主账号",
+    "CSDN 主账号",
+  ]);
+
+  await cards
+    .filter({ hasText: "CSDN 主账号" })
+    .getByRole("button", { name: "调整CSDN 主账号顺序" })
+    .dragTo(cards.filter({ hasText: "知乎主账号" }), {
+      targetPosition: { x: 20, y: 20 },
+    });
+  await expect(cards.locator("h3")).toHaveText([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+
+  const stored = (await page.evaluate(() => window.studio.bootstrap())).state;
+  expect(stored.accounts.map((account) => account.name)).toEqual([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+  await client.close();
+  await launch();
+  await page.getByRole("button", { name: "平台账号", exact: false }).click();
+  await expect(page.locator(".account-card h3")).toHaveText([
+    "CSDN 主账号",
+    "知乎主账号",
+    "公众号主账号",
+  ]);
+});
+
 test("删除与批量清理已取消记录：确认、保留排队任务和重启持久化", async () => {
   await page.getByRole("button", { name: "新建文章", exact: true }).click();
   await page.getByLabel("文章标题").fill("任务清理测试");
@@ -850,4 +904,88 @@ test("百家号 stoken 登录与注册 HTTP 回跳升级为 HTTPS", async () => 
     remote.getByRole("heading", { name: "已进入创作页" }),
   ).toBeVisible();
   await expect(remote).toHaveURL("https://baijiahao.baidu.com/builder/rc/home");
+});
+
+test("百家号新版编辑器检查后立即更新账号卡片状态", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "baijiahao",
+      name: "百家号新版编辑器",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    session.fromPartition(`persist:account-${id}`).protocol.handle(
+      "https",
+      () =>
+        new Response(
+          `<meta charset="utf-8">
+             <div data-lexical-editor="true" contenteditable="true" style="width:500px;height:50px"></div>
+             <script>
+               window.UE_V2 = { instants: { editor: {
+                 isReady: true,
+                 body: {},
+                 value: "",
+                 getContentTxt() { return this.value; },
+                 setContent(value) { this.value = value.replace(/<[^>]+>/g, ""); }
+               } } };
+             </script>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        ),
+    );
+  }, accountId);
+  await page.getByRole("button", { name: "平台账号", exact: true }).click();
+  const card = page.locator(".account-card").filter({
+    has: page.getByRole("heading", { name: "百家号新版编辑器" }),
+  });
+  await expect(card.getByText("未验证编辑器", { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: "检查", exact: true }).click();
+  await expect(card.getByText("编辑器已验证", { exact: true })).toBeVisible();
+  await expect(card.getByText(/最近检查/)).toBeVisible();
+});
+
+test("平台账号窗口使用完整 Chrome 浏览器身份", async () => {
+  const accountId = await page.evaluate(async () => {
+    const state = await window.studio.command({
+      type: "account.add",
+      platform: "toutiao",
+      name: "头条登录身份测试",
+    });
+    return state.accounts.at(-1)!.id;
+  });
+  await client.evaluate(({ session }, id) => {
+    session.fromPartition(`persist:account-${id}`).protocol.handle(
+      "https",
+      () =>
+        new Response("<html><body>identity</body></html>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    );
+  }, accountId);
+  const opened = client.waitForEvent("window");
+  await page.evaluate(
+    (id) => window.studio.command({ type: "account.open", id }),
+    accountId,
+  );
+  const remote = await opened;
+  const identity = await remote.evaluate(() => {
+    const agentData = (
+      navigator as Navigator & {
+        userAgentData?: {
+          brands: { brand: string }[];
+          platform: string;
+        };
+      }
+    ).userAgentData;
+    return {
+      userAgent: navigator.userAgent,
+      brands: agentData?.brands.map((item) => item.brand) ?? [],
+      platform: agentData?.platform,
+    };
+  });
+  expect(identity.userAgent).toContain("Chrome/");
+  expect(identity.userAgent).not.toContain("Electron/");
+  expect(identity.brands).toContain("Google Chrome");
+  expect(identity.platform).toBe("macOS");
 });
